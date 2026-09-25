@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, LocateFixed, Search, Loader2, Navigation } from 'lucide-react';
-import { TASHKENT_CENTER, DISTRICT_COORDS } from '@/lib/constants';
+import { TASHKENT_CENTER, DISTRICT_COORDS, matchDistrictKey } from '@/lib/constants';
 
 interface GeoResult {
   lat: number;
@@ -97,10 +97,8 @@ export default function MapPicker({
   // District tanlanganda avtomatik koordinataga marker qo'yish
   useEffect(() => {
     if (!mapRef.current) return;
-    const base =
-      district && Object.keys(DISTRICT_COORDS).find((k) => district.toLowerCase().includes(k.toLowerCase()))
-        ? DISTRICT_COORDS[district]
-        : null;
+    const key = matchDistrictKey(district);
+    const base = key ? DISTRICT_COORDS[key] : null;
     if (base) placeMark(base.lat, base.lng, { fly: true, geocode: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [district]);

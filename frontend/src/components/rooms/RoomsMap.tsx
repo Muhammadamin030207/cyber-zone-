@@ -5,7 +5,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, Loader2, LocateFixed, Navigation } from 'lucide-react';
 import type { Room } from '@/lib/types';
-import { roomCoords, TASHKENT_CENTER } from '@/lib/constants';
+import { resolveRoomCoords, TASHKENT_CENTER } from '@/lib/constants';
 import { formatPrice } from '@/lib/utils';
 
 function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
@@ -22,6 +22,7 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
+  const userMarkerRef = useRef<L.Marker | null>(null);
   const [ready, setReady] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [myPos, setMyPos] = useState<{ lat: number; lng: number } | null>(null);
@@ -46,10 +47,12 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
 
     setReady(true);
 
+    const markerMap = markersRef.current;
     return () => {
       map.remove();
       mapRef.current = null;
-      markersRef.current.clear();
+      markerMap.clear();
+      userMarkerRef.current = null;
       setReady(false);
     };
   }, []);
@@ -59,19 +62,49 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
     if (!map) return;
 
     map.eachLayer((layer) => {
-      if (layer instanceof L.Marker) map.removeLayer(layer);
+      // Joylashuv marker'ini o'chirmaymiz — u keyingi qo'llamada qayta ishlatiladi.
+      if (layer instanceof L.Marker && layer !== userMarkerRef.current) map.removeLayer(layer);
     });
     markersRef.current.clear();
 
-    const markers = roomsList.map((room, i) => {
-      const { lat, lng } = roomCoords(room);
+    // Joylashuv ma'lum bo'lsa — xonalar masofa bo'yicha saralanadi (eng yaqin = №1).
+    // Aks holda tuman nomi bo'yicha guruhlanadi, shunda bir tuman xonalari yonma-yon chiqadi.
+    const sortedRooms = [...roomsList].sort((a, b) => {
+      const ca = resolveRoomCoords(a);
+      const cb = resolveRoomCoords(b);
+      if (my) {
+        const d = haversineKm(my, ca) - haversineKm(my, cb);
+        if (Math.abs(d) > 0.0001) return d;
+      }
+      const ka = ca.districtKey ?? 'zzz';
+      const kb = cb.districtKey ?? 'zzz';
+      if (ka !== kb) return ka.localeCompare(kb, 'uz');
+      return a.name.localeCompare(b.name, 'uz');
+    });
+
+    // Bir xil nuqtaga tushgan xonalar ustma-ust ko'rinmasin uchun kichik radial surish.
+    const groupByKey = new Map<string, number>();
+    const markers = sortedRooms.map((room, i) => {
+      const resolved = resolveRoomCoords(room);
+      const { lat, lng, precise, districtKey } = resolved;
+      // Aniq koordinatasi yo'q xonalar uchun joylashuv kaliti
+      const groupKey = precise ? room.id : `approx:${lat.toFixed(4)},${lng.toFixed(4)}`;
+      const idxInGroup = groupByKey.get(groupKey) ?? 0;
+      groupByKey.set(groupKey, idxInGroup + 1);
+
+      // Oltin burchak — marker'lar bir-birining ustiga tushmasdan teng taqsimlanadi
+      const angle = idxInGroup * 2.399963;
+      const spread = idxInGroup === 0 ? 0 : 0.0014 * Math.sqrt(idxInGroup);
+      const markerLat = lat + Math.cos(angle) * spread;
+      const markerLng = lng + Math.sin(angle) * spread;
+
       const isActive = active === room.id;
       const dist = my ? haversineKm(my, { lat, lng }) : null;
       const icon = L.divIcon({
         className: '',
         html: `<div style="
           width:${isActive ? 42 : 34}px;height:${isActive ? 42 : 34}px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);
-          background:linear-gradient(135deg,#10b981,#f59e0b);border:2.5px solid #fff;
+          background:linear-gradient(135deg,#10b981,#f59e0b);border:2.5px solid ${isActive ? '#22d3ee' : '#fff'};
           box-shadow:0 6px 16px rgba(16,185,129,.55);display:flex;align-items:center;justify-content:center;
           transition:all .2s ease;
         "><div style="transform:rotate(45deg);font-size:${isActive ? 15 : 13}px;color:#000;font-weight:900;">${i + 1}</div></div>`,
@@ -87,32 +120,57 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
             <div style="font-weight:800;color:#0b3b33;font-size:14px;line-height:1.2;">${room.name}</div>
           </div>
           <div style="font-size:12px;color:#555;margin-bottom:4px;">${room.address || ''}</div>
-          <div style="font-size:13px;color:#b45309;font-weight:800;margin-bottom:4px;">${formatPrice(price)} so'm/soat dan</div>
-          ${dist != null ? `<div style="font-size:12px;color:#0b7285;font-weight:700;margin-bottom:8px;">Sizdan ${dist.toFixed(1)} km</div>` : ''}
+          ${districtKey && !precise ? `<div style="font-size:11px;color:#92400e;background:#fef3c7;padding:3px 7px;border-radius:6px;margin-bottom:5px;display:inline-block;">Taxminiy joylashuv — ${districtKey} markazi</div>` : ''}
+          ${!districtKey && !precise ? '<div style="font-size:11px;color:#b91c1c;background:#fee2e2;padding:3px 7px;border-radius:6px;margin-bottom:5px;display:inline-block;">Aniq koordinata kiritilmagan</div>' : ''}
+          <div style="font-size:13px;color:#b45309;font-weight:800;margin-bottom:4px;">${formatPrice(price)} so&apos;m/soat dan</div>
+          ${dist != null ? `<div style="font-size:12px;color:#0b7285;font-weight:700;margin-bottom:8px;">Sizdan ${dist.toFixed(1)} km${precise ? '' : ' (taxminiy)'}</div>` : ''}
           <div style="display:flex;gap:6px;">
             <a href="${linkBase}/${room.id}" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#10b981,#0d9668);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(16,185,129,.4);">Batafsil →</a>
-            <a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}" target="_blank" rel="noopener" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#6366f1,#4338ca);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(99,102,241,.4);">Yo'nalish</a>
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}" target="_blank" rel="noopener" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#6366f1,#4338ca);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(99,102,241,.4);">Yo&apos;nalish</a>
           </div>
         </div>`;
 
-      const marker = L.marker([lat, lng], { icon }).addTo(map);
+      const marker = L.marker([markerLat, markerLng], { icon }).addTo(map);
       marker.bindPopup(popupHtml, { closeButton: false });
       marker.on('click', () => setActiveId(room.id));
       marker.on('popupclose', () => setActiveId(null));
       markersRef.current.set(room.id, marker);
-      return { marker, room, lat, lng };
+      return { marker, room, lat, lng, precise };
     });
 
+    // Joylashuv markerini yangilash
+    if (my) {
+      if (!userMarkerRef.current) {
+        userMarkerRef.current = L.marker([my.lat, my.lng], {
+          icon: L.divIcon({
+            className: '',
+            html: '<div style="width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(59,130,246,.25),0 4px 10px rgba(0,0,0,.4);"></div>',
+            iconSize: [18, 18],
+            iconAnchor: [9, 9],
+          }),
+          zIndexOffset: 500,
+          interactive: false,
+        }).addTo(map);
+      } else {
+        userMarkerRef.current.setLatLng([my.lat, my.lng]);
+      }
+    }
+
     if (markers.length) {
+      // BARCHA xonalar ko'rinib tursin — hech qanday marker ekrandan chiqib ketmasin.
+      // Oldingi xato: faqat eng yaqin xonaga flyTo(zoom 14) qilinardi, qolganlari
+      // (masalan Chilonzor Yunusoboddan 7 km uzoqda) ekrandan tushib qolardi.
+      const points: [number, number][] = markers.map((m) => [m.lat, m.lng] as [number, number]);
+      if (my) points.push([my.lat, my.lng]);
+      const bounds = L.latLngBounds(points);
+      map.fitBounds(bounds, { padding: [56, 56], maxZoom: 14, animate: true, duration: 0.6 });
+
+      // Eng yaqin xona faqat ajratib ko'rsatiladi (zo'omlash emas).
       if (my) {
         const nearest = markers.reduce((a, b) =>
           haversineKm(my, { lat: a.lat, lng: a.lng }) < haversineKm(my, { lat: b.lat, lng: b.lng }) ? a : b
         );
-        map.flyTo([nearest.lat, nearest.lng], Math.max(map.getZoom(), 14), { duration: 0.9 });
         nearest.marker.openPopup();
-      } else {
-        const bounds = L.latLngBounds(markers.map((m) => [m.lat, m.lng] as [number, number]));
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
       }
     } else {
       map.setView([TASHKENT_CENTER.lat, TASHKENT_CENTER.lng], 12);
@@ -124,9 +182,25 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
   }, [rooms, ready, activeId, myPos, applyMarkers]);
 
   // ===== Eng yaqin xona =====
-  const findNearest = () => {
+  const requestPosition = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      setLocErr('Brauzeringiz geolokatsiyani qo\'llab-quvvatlamaydi');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setMyPos({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setLocErr(null);
+      },
+      () => {
+        setLocErr('Joylashuv o\'qib bo\'lmadi. Ruxsatni tekshiring.');
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  }, []);
+
+  const findNearest = useCallback(() => {
     setLocating(true);
-    setLocErr(null);
     if (!('geolocation' in navigator)) {
       setLocErr('Brauzeringiz geolokatsiyani qo\'llab-quvvatlamaydi');
       setLocating(false);
@@ -137,17 +211,14 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
         const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setMyPos(p);
         setLocating(false);
+        setLocErr(null);
         if (rooms.length) {
-          const nearest = rooms.reduce((a, b) =>
-            haversineKm(p, roomCoords(a)) < haversineKm(p, roomCoords(b)) ? a : b
-          );
+          const nearest = rooms.reduce((a, b) => {
+            const ca = resolveRoomCoords(a);
+            const cb = resolveRoomCoords(b);
+            return haversineKm(p, ca) < haversineKm(p, cb) ? a : b;
+          });
           setActiveId(nearest.id);
-          const mk = markersRef.current.get(nearest.id);
-          // markerlar yana render bo'lgach popup ochiladi (applyMarkers my bilan)
-          if (mk) {
-            mapRef.current?.flyTo([roomCoords(nearest).lat, roomCoords(nearest).lng], 15, { duration: 0.9 });
-            mk.openPopup();
-          }
         }
       },
       () => {
@@ -156,12 +227,27 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
     );
-  };
+  }, [rooms]);
+
+  // Sahifa ochilganda joylashuvni avtomatik so'raymiz — foydalanuvchi "Eng yaqin"
+  // tugmasini bosishini kutmasdan eng yaqin xona ko'rsatilsin.
+  useEffect(() => {
+    if (!ready || myPos) return;
+    const timer = window.setTimeout(() => requestPosition(), 0);
+    return () => window.clearTimeout(timer);
+  }, [ready, myPos, requestPosition]);
 
   const nearestRoom = myPos && rooms.length
-    ? rooms.reduce((a, b) => (haversineKm(myPos, roomCoords(a)) < haversineKm(myPos, roomCoords(b)) ? a : b), rooms[0])
+    ? rooms.reduce((a, b) => {
+        const ca = resolveRoomCoords(a);
+        const cb = resolveRoomCoords(b);
+        return haversineKm(myPos, ca) < haversineKm(myPos, cb) ? a : b;
+      }, rooms[0])
     : null;
-  const nearestText = nearestRoom ? `Eng yaqin: ${nearestRoom.name} · ${haversineKm(myPos!, roomCoords(nearestRoom)).toFixed(1)} km` : null;
+  const nearestText = nearestRoom
+    ? `Eng yaqin: ${nearestRoom.name} · ${haversineKm(myPos!, resolveRoomCoords(nearestRoom)).toFixed(1)} km`
+    : null;
+  const impreciseCount = rooms.filter((r) => !resolveRoomCoords(r).precise).length;
 
   return (
     <div className="neo-card rounded-2xl overflow-hidden">
@@ -194,6 +280,12 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
           </span>
         )}
         {locErr && <span className="text-red-400">{locErr}</span>}
+        {impreciseCount > 0 && (
+          <span className="inline-flex items-center gap-1.5 text-amber-300/90">
+            <MapPin size={12} />
+            {impreciseCount} ta xona uchun aniq koordinata kiritilmagan — tuman markazi bo&apos;yicha taxmin qilingan
+          </span>
+        )}
       </div>
     </div>
   );
