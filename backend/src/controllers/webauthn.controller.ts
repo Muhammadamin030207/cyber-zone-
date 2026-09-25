@@ -117,7 +117,10 @@ export async function registerOptions(req: AuthRequest, res: Response, next: Nex
         transports: Array.isArray(c.transports) ? (c.transports as string[]) : ['internal'],
       })),
       authenticatorSelection: {
-        residentKey: 'preferred',
+        // Discoverable (resident) passkey — email kiritmasdan login qilish uchun
+        // shart: brauzer credential'ni RP domeni bo'yicha o'zi topa olishi kerak.
+        residentKey: 'required',
+        requireResidentKey: true,
         userVerification: 'preferred',
       },
     });
@@ -208,7 +211,22 @@ export async function registerVerify(req: AuthRequest, res: Response, next: Next
 export async function authOptions(req: Request, res: Response, next: NextFunction) {
   try {
     const email = String(req.body?.email || '').toLowerCase().trim();
-    if (!email) return badRequest(res, 'Email talab qilinadi');
+
+    // Email kiritilmagan bo'lsa — DISCOVERABLE (usernavigatsiyasiz) login.
+    // allowCredentials bo'sh bo'lgani uchun brauzer shu RP domeniga ro'yxatdan
+    // o'tgan passkeylarni o'zi ko'rsatadi va foydalanuvchi tanlaydi.
+    // Email majburiy emas (spec §20) — lekin xavfsizlik saqlanadi: foydalanuvchi
+    // kriptografik imzo bilan aniqlanadi, mijoz yuborgan userId ishonilmaydi.
+    if (!email) {
+      const discoverableOptions: PublicKeyCredentialRequestOptionsJSON = await generateAuthenticationOptions({
+        rpID: requestRp(req)?.rpID ?? rpID(),
+        timeout: 60_000,
+        allowCredentials: [],
+        userVerification: 'preferred',
+      });
+      setChallenge('wa:auth:discoverable', discoverableOptions.challenge, requestRp(req) || undefined);
+      return ok(res, { options: discoverableOptions, discoverable: true });
+    }
 
     const user = await prisma.user.findUnique({
       where: { email },
@@ -248,12 +266,17 @@ export async function authOptions(req: Request, res: Response, next: NextFunctio
 export async function authVerify(req: Request, res: Response, next: NextFunction) {
   try {
     const { response, userId, pendingLoginToken } = req.body;
-    if (!response || !userId) return badRequest(res, 'WebAuthn javob talab qilinadi');
+    if (!response) return badRequest(res, 'WebAuthn javob talab qilinadi');
+
+    // 2-bosqich (PASSKEY_REQUIRED) rejimi: foydalanuvchi oldin email+parol bilan
+    // tasdiqlangan, shuning uchun userId berilgan va pending token bilan bog'lanadi.
+    const twoFactorMode = Boolean(pendingLoginToken);
+    if (twoFactorMode && !userId) return badRequest(res, 'WebAuthn javob talab qilinadi');
 
     // PASSKEY_REQUIRED (2-bosqich) holatida: password tekshirildi, pending token berildi.
     // Endi bu token shu user uchun va hali amalda ekanini server tekshiradi — boshqa
     // yo'l bilan token berish mumkin emas.
-    if (pendingLoginToken) {
+    if (twoFactorMode) {
       try {
         const decoded = jwt.verify(pendingLoginToken, config.jwt.secret as Secret) as {
           type?: string;
@@ -271,17 +294,34 @@ export async function authVerify(req: Request, res: Response, next: NextFunction
       }
     }
 
-    const challenge = getChallenge(`wa:auth:${userId}`);
-    if (!challenge) return badRequest(res, 'Authentication challenge muddati o\'tgan. Qayta urinib ko\'ring.');
-    const expectedChallenge = challenge.value;
-
     const passkey = await prisma.passkey.findUnique({
       where: { credentialId: response.id as string },
     });
     if (!passkey) return badRequest(res, 'Passkey topilmadi');
 
-    // Resource owner tekshiruvi: passkey faqat o'z egasiga
-    if (passkey.userId !== userId) return forbidden(res, 'Ushbu passkey boshqa foydalanuvchiga tegishli');
+    // XAVFSIZLIK: oddiy (email'siz) login rejimida mijoz yuborgan userId butunlay
+    // ishonchsiz. Foydalanuvchi credential orqali aniqlanadi va kriptografik imzo
+    // shu credential'ning egasi ekanini tasdiqlaydi.
+    if (twoFactorMode) {
+      if (passkey.userId !== userId) return forbidden(res, 'Ushbu passkey boshqa foydalanuvchiga tegishli');
+    } else if (response.userHandle) {
+      let handleUserId: string;
+      try {
+        handleUserId = Buffer.from(
+          typeof response.userHandle === 'string' ? response.userHandle : Buffer.from(response.userHandle as ArrayBuffer),
+        ).toString('utf8');
+      } catch {
+        return badRequest(res, 'Passkey ma\'lumotlari noto\'g\'ri');
+      }
+      if (handleUserId !== passkey.userId) return forbidden(res, 'Ushbu passkey boshqa foydalanuvchiga tegishli');
+    } else if (userId && userId !== passkey.userId) {
+      return forbidden(res, 'Ushbu passkey boshqa foydalanuvchiga tegishli');
+    }
+
+    const resolvedUserId = passkey.userId;
+    const challenge = getChallenge(twoFactorMode || userId ? `wa:auth:${resolvedUserId}` : 'wa:auth:discoverable');
+    if (!challenge) return badRequest(res, 'Authentication challenge muddati o\'tgan. Qayta urinib ko\'ring.');
+    const expectedChallenge = challenge.value;
 
     let verification;
     try {
@@ -314,7 +354,7 @@ export async function authVerify(req: Request, res: Response, next: NextFunction
       return badRequest(res, 'Passkey qayta ishlatilgan. Yangi imkoniyat kun bosing.');
     }
 
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({ where: { id: resolvedUserId } });
     if (!user) return notFoundMsg(res, 'Foydalanuvchi topilmadi');
     if (user.status !== 'ACTIVE') return forbidden(res, 'Foydalanuvchi bloklangan');
 

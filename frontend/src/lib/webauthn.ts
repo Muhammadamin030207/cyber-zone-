@@ -130,6 +130,29 @@ export async function passwordlessLogin(email: string): Promise<{ success: boole
   return { success: true, code: verifyRes.data?.code, message: verifyRes.data?.message };
 }
 
+// ============ FACE ID BILAN KIRISH — email majburiy EMAS (spec §20) ============
+// Discoverable (usernavigatsiyasiz) passkey: allowCredentials bo'sh bo'lgani uchun
+// brauzer shu domen uchun saqlangan passkeylarni o'zi ko'rsatadi. Foydalanuvchi
+// Face ID / Touch ID / Windows Hello bilan tasdiqlaydi — email kiritilmaydi.
+// Xavfsizlik: foydalanuvchi credential orqali kriptografik imzo bilan aniqlanadi.
+export async function biometricLogin(): Promise<{ success: boolean; message?: string; code?: string }> {
+  if (!window.PublicKeyCredential) {
+    return { success: false, message: 'Bu brauzer WebAuthnni qo\'llamaydi' };
+  }
+  const { data } = await api.post<{ success: boolean; data: { options: any; discoverable: boolean } }>(
+    '/api/webauthn/auth/options',
+    {}
+  );
+  const assertion = await startAuthentication({ optionsJSON: data.data.options });
+  const verifyRes = await api.post<
+    { success: boolean; data: { user: any; accessToken: string; refreshToken: string }; message?: string; code?: string }
+  >('/api/webauthn/auth/verify', { response: assertion });
+  if (verifyRes.data?.data?.accessToken) {
+    useAuthStore.getState().setAuth(verifyRes.data.data);
+  }
+  return { success: true, code: verifyRes.data?.code, message: verifyRes.data?.message };
+}
+
 // ============ SECOND STEP (paroldan keyin passkey, PASSKEY_REQUIRED) ============
 // Server parolni tasdiqladi (pendingLoginToken) — endi passkey ham talab qilinadi.
 export async function finishPasskeyLogin(
