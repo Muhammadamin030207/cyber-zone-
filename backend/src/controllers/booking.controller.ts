@@ -788,13 +788,17 @@ export const getRoomBookings = async (req: AuthRequest, res: Response, next: Nex
   try {
     const { date, status, limit, offset } = req.query as { date?: string; status?: string; limit?: string; offset?: string };
 
+    const isSuperAdmin = req.user!.role === 'SUPER_ADMIN';
     const room = await prisma.computerRoom.findUnique({ where: { ownerId: req.user!.userId } });
-    if (!room) return badRequest(res, 'Sizda kompyuter xona yo\'q');
-    if (req.user!.role === 'ADMIN' && room.ownerId !== req.user!.userId) {
-      return forbidden(res);
+
+    // ADMIN hali xona yaratmagan bo'lsa — bu xato emas, shunchaki bron yo'q.
+    // 400 qaytarish UI'ni "server xatosi" holatiga tushirib qo'yardi.
+    if (!room && !isSuperAdmin) {
+      return ok(res, { bookings: [], total: 0 });
     }
 
-    const where: any = { roomId: room.id };
+    const where: any = {};
+    if (!isSuperAdmin) where.roomId = room!.id;
     if (date) {
       const di = toISODate(date);
       if (di) where.date = di.date;

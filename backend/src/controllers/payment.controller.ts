@@ -190,13 +190,38 @@ function normalizeMethod(method: string): { method: string; providerId: string; 
 
 // ============ POST /api/payments/create — USER: to'lov sessiyasi yaratish ============
 export const createPayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  // catch bloki ham ishlatishi uchun try tashqarisida e'lon qilinadi
+  let idemKey: string | null = null;
   try {
-    const { bookingId, method, depositPercent } = req.body as { bookingId?: string; method?: string; depositPercent?: number };
+    const { bookingId, method, depositPercent, idempotencyKey } = req.body as { bookingId?: string; method?: string; depositPercent?: number; idempotencyKey?: string };
 
     if (!bookingId) return badRequest(res, 'bookingId majburiy');
     if (!method) return badRequest(res, 'method majburiy');
     if (depositPercent !== undefined && (!Number.isInteger(depositPercent) || depositPercent < 1 || depositPercent > 100)) {
       return badRequest(res, 'Depozit foizi 1-100 oralig\'ida bo\'lishi kerak');
+    }
+
+    // Idempotency: bir xil kalit bilan yuborilgan so'rov bitta to'lovni yaratadi.
+    idemKey = typeof idempotencyKey === 'string' && idempotencyKey.trim()
+      ? idempotencyKey.trim().slice(0, 64)
+      : null;
+    if (idemKey) {
+      const already = await prisma.payment.findUnique({ where: { idempotencyKey: idemKey } });
+      if (already) {
+        return ok(res, {
+          payment: {
+            id: already.id,
+            status: already.status,
+            amount: already.amount,
+            method: already.method,
+            provider: already.provider,
+            depositPercent: already.depositPercent,
+          },
+          checkoutUrl: null,
+          resumed: true,
+          idempotent: true,
+        });
+      }
     }
 
     const { method: normMethod, providerId, cash } = normalizeMethod(method);
@@ -342,6 +367,7 @@ amount: Number(active.amount),
           status: cash ? 'PENDING' : 'CREATED',
           currency: 'UZS',
           depositPercent: percent,
+          idempotencyKey: idemKey,
           metadata: (!cash ? { providerMethod: providerId.toLowerCase() } : null) as any,
         },
       });
@@ -434,6 +460,27 @@ amount: Number(active.amount),
       amount,
     }, 'To\'lov sessiyasi yaratildi');
   } catch (err) {
+    // Parallel so'rovlar: bir xil idempotency kaliti bilan ikkinchisi unique constraint'ga uriladi.
+    // Bu xato emas — ikkinchi so'rov birinchisining natijasini oladi.
+    const code = (err as { code?: string })?.code;
+    if (code === 'P2002' && idemKey) {
+      const existing = await prisma.payment.findUnique({ where: { idempotencyKey: idemKey } });
+      if (existing) {
+        return ok(res, {
+          payment: {
+            id: existing.id,
+            status: existing.status,
+            amount: existing.amount,
+            method: existing.method,
+            provider: existing.provider,
+            depositPercent: existing.depositPercent,
+          },
+          checkoutUrl: null,
+          resumed: true,
+          idempotent: true,
+        });
+      }
+    }
     next(err);
   }
 };

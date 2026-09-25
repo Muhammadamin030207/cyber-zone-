@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import {
   Loader2, CheckCircle2, Wallet, Banknote, AlertCircle,
@@ -53,6 +53,10 @@ export default function CheckoutPage({ params }: { params: Promise<{ locale: str
   const [verified, setVerified] = useState(false);
   const [verifyPayment, setVerifyPayment] = useState<{ id: string } | null>(null);
   const [polling, setPolling] = useState(false);
+
+  // Idempotency kaliti: bitta to'lov urinishida barqaror qoladi.
+  // Sahifa yangilanganda yangi kalit yaratiladi (yangi to'lov niyati).
+  const payIdemKey = useRef<string>(`pay_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`);
 
   // Provayderlar holati (qaysilari ulangan — backend javobi)
   useEffect(() => {
@@ -150,6 +154,7 @@ export default function CheckoutPage({ params }: { params: Promise<{ locale: str
       const { data } = await api.post('/api/payments/create', {
         bookingId: booking.id,
         method: m,
+        idempotencyKey: payIdemKey.current,
       });
       const d = data.data;
       if (m === 'CASH' || (data.data?.method === 'CASH')) {

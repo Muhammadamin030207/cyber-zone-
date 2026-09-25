@@ -319,6 +319,10 @@ model Booking {
   barOrder BarOrder?
 
   @@unique([userId, idempotencyKey])
+  @@index([roomId, date], map: "bookings_room_id_date_idx")
+  @@index([computerId, date], map: "bookings_computer_id_date_idx")
+  @@index([userId, createdAt], map: "bookings_user_id_created_at_idx")
+  @@index([status, createdAt], map: "bookings_status_created_at_idx")
   @@map("bookings")
 }
 
@@ -394,6 +398,7 @@ model Payment {
   providerTransactionId String?          @unique @map("provider_transaction_id") // idempotency (provider transaction ID)
   providerPaymentId    String?           @map("provider_payment_id")
   transactionId        String?           @map("transaction_id") // eski/kompat
+  idempotencyKey       String?           @unique @map("idempotency_key") // client so'rovi kaliti — takroriy yaratishni DB darajasida to'xtatadi
   metadata             Json?             @map("metadata")
   failureReason        String?           @map("failure_reason")
   expiresAt            DateTime?         @map("expires_at")
@@ -405,6 +410,9 @@ model Payment {
   user    User          @relation(fields: [userId], references: [id])
   audits  PaymentAuditLog[]
 
+  @@index([bookingId, status], map: "payments_booking_id_status_idx")
+  @@index([userId, createdAt], map: "payments_user_id_created_at_idx")
+  @@index([status, expiresAt], map: "payments_status_expires_at_idx")
   @@map("payments")
 }
 

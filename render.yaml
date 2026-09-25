@@ -81,6 +81,47 @@ services:
       # To'lov provayderlari callback/webhook bazaviy URL — mahalliy "localhost"ga tushmaslik
       - key: PROVIDER_CALLBACK_URL
         value: https://cyberzone-backend-api.onrender.com
+      # --- To'lov provayderlari (real credential Render dashboard'da qo'lda qo'yiladi) ---
+      # Bo'sh qolsa provider "CONFIGURATION REQUIRED" holatida ko'rinadi — fake success chiqmaydi.
+      - key: PAYME_MERCHANT_ID
+        sync: false
+      - key: PAYME_MERCHANT_KEY
+        sync: false
+      - key: PAYME_API_ENDPOINT
+        value: https://checkout.payme.uz
+      - key: PAYME_CHECKOUT_URL
+        value: https://checkout.payme.uz
+      - key: CLICK_SERVICE_ID
+        sync: false
+      - key: CLICK_MERCHANT_ID
+        sync: false
+      - key: CLICK_MERCHANT_USER_ID
+        sync: false
+      - key: CLICK_SECRET_KEY
+        sync: false
+      - key: CLICK_CHECKOUT_URL
+        value: https://my.click.uz/services/pay
+      - key: UZUM_MERCHANT_ID
+        sync: false
+      - key: UZUM_SECRET_KEY
+        sync: false
+      - key: UZUM_API_ENDPOINT
+        value: https://checkoutapi.uzumbank.uz
+      - key: UZUM_CHECKOUT_URL
+        value: https://www.uzumcheckout.uz
+      - key: PAYNET_MERCHANT_ID
+        sync: false
+      - key: PAYNET_PASSWORD
+        sync: false
+      - key: PAYNET_SERVICE_ID
+        sync: false
+      - key: PAYNET_API_ENDPOINT
+        value: https://api.paynet.uz/api
+      - key: PAYNET_CHECKOUT_URL
+        value: https://app.paynet.uz
+      # Depozit minimal foizi (30% standart business logic; min chegara 10%)
+      - key: MIN_DEPOSIT_PERCENT
+        value: "30"
       # Login brute-force: 10-chi xato urinishdan keyin hisob 24-soatga bloklanadi (§4.2)
       - key: LOGIN_LOCK_MINUTES
         value: "1440"

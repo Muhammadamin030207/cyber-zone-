@@ -117,7 +117,7 @@ export default function AdminPage({ params }: { params: Promise<{ locale: string
       </div>
 
       {/* Content */}
-      {!room && tab !== 'room' && tab !== 'bar' && tab !== 'chat' && tab !== 'requests' && tab !== 'support' && tab !== 'site' ? (
+      {!room && tab !== 'room' && tab !== 'bar' && tab !== 'chat' && tab !== 'requests' && tab !== 'support' && tab !== 'site' && tab !== 'bookings' ? (
         <div className="text-center py-20">
           <div className="w-16 h-16 mx-auto mb-4 rounded-2xl flex items-center justify-center bg-[var(--acc-b)]/10 border border-[var(--acc-b)]/25">
             <Logo size={38} />
@@ -133,7 +133,7 @@ export default function AdminPage({ params }: { params: Promise<{ locale: string
         <ZonesTab room={room} />
       ) : tab === 'computers' && room ? (
         <ComputersTab room={room} />
-      ) : tab === 'bookings' && room ? (
+      ) : tab === 'bookings' ? (
         <BookingsTab room={room} />
       ) : tab === 'bar' ? (
         <BarAdmin />
@@ -500,7 +500,8 @@ function classifyBookingsError(err: any): BookingsError {
   return { kind: 'unknown', message: getApiErrorMessage(err, 'Bronlarni yuklashda xatolik yuz berdi') };
 }
 
-function BookingsTab({ room }: { room: Room }) {
+function BookingsTab({ room }: { room?: Room | null }) {
+  void room;
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);

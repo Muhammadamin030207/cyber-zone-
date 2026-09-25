@@ -16,6 +16,24 @@ const UNPAID: BookingStatus[] = ['PENDING', 'PENDING_PAYMENT'];
 // "Qaror kutilayotgan" to'lov — kassa (CASH) PENDING yoki aktiv onlayn sessiya.
 const OPEN_DECISION: PaymentStatus[] = ['PENDING', 'CREATED', 'REDIRECT_REQUIRED', 'PROCESSING'];
 
+/**
+ * Bronni ushlab turadigan yaroqli to'lov bormi?
+ *
+ * Faqat "qaror kutilayotgan" holatdagi VA hali muddati o'tmagan to'lov bronni ushlaydi.
+ * Muddati o'tgan yoki muddati belgilanmagan (null) PENDING to'lov slotni abadiy
+ * bloklab qo'yishi mumkin emas — shuning uchun `expiresAt` hisobga olinadi.
+ */
+export function isHeldByOpenPayment(
+  payments: Array<{ status: string; expiresAt: Date | null }>,
+  now: number,
+): boolean {
+  return payments.some(
+    (p) =>
+      (OPEN_DECISION as readonly string[]).includes(p.status) &&
+      (p.expiresAt === null || p.expiresAt.getTime() > now),
+  );
+}
+
 export async function expireStaleUnpaidBookings(): Promise<number> {
   const ttl = config.bookings.unpaidTtlMinutes;
   const cutoff = new Date(Date.now() - ttl * 60 * 1000);
@@ -33,11 +51,9 @@ export async function expireStaleUnpaidBookings(): Promise<number> {
   });
 
   let expired = 0;
+  const now = Date.now();
   for (const booking of stale) {
-    // Agar biror to'lov "qaror kutilmoqda" yoki aktiv sessiya holatida bo'lsa,
-    // bronni bekor qilmaymiz (kassa to'lovi yoki davom etayotgan onlayn to'lov mumkin).
-    const hasOpenDecision = booking.payments.some((p) => OPEN_DECISION.includes(p.status));
-    if (hasOpenDecision) continue;
+    if (isHeldByOpenPayment(booking.payments, now)) continue;
 
     try {
       await prisma.$transaction(async (tx) => {
