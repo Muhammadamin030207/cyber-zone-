@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { computeBookingPrice } from '../utils/pricing';
+import { describe, it, expect, vi } from 'vitest';
+import { computeBookingPrice, resolveDepositPercent } from '../utils/pricing';
+import { round2 } from '../utils/money';
 
 describe('computeBookingPrice — base', () => {
   it('computes base, 30% advance and remaining', () => {
@@ -107,5 +108,72 @@ describe('computeBookingPrice — combined discounts', () => {
     expect(r.finalTotal).toBe(17000); // 30000 - 13000
     expect(r.advance).toBe(5100);
     expect(r.remaining).toBe(11900);
+  });
+});
+// ============ DEPOZIT FOIZI (spec §6) — HARDCODE BO'LMASLIGI ============
+// Foiz `DEPOSIT_PERCENT` envidan olinadi va bronga yoziladi. 30% — faqat
+// standart qiymat; admin/config uni o'zgartirishi MUMKIN.
+describe('computeBookingPrice — depozit foizi konfiguratsiyadan', () => {
+  it('standart 30% bo\'yicha 120 000 -> 36 000 / 84 000', () => {
+    const r = computeBookingPrice({ pricePerHour: 60000, durationHours: 2 });
+    expect(r.depositPercent).toBe(30);
+    expect(r.finalTotal).toBe(120000);
+    expect(r.advance).toBe(36000);
+    expect(r.remaining).toBe(84000);
+  });
+
+  it('berilgan foizni qo\'llaydi (30 hardcode emas)', () => {
+    const r = computeBookingPrice({ pricePerHour: 60000, durationHours: 2, depositPercent: 50 });
+    expect(r.depositPercent).toBe(50);
+    expect(r.advance).toBe(60000);
+    expect(r.remaining).toBe(60000);
+  });
+
+  it('25% kabi g\'ayri-default foiz ham to\'gri ishlaydi', () => {
+    const r = computeBookingPrice({ pricePerHour: 40000, durationHours: 3, depositPercent: 25 });
+    expect(r.depositPercent).toBe(25);
+    expect(r.finalTotal).toBe(120000);
+    expect(r.advance).toBe(30000);
+    expect(r.remaining).toBe(90000);
+  });
+
+  it('foiz chegaradan tashqarida bo\'lsa 1..100 ga qisqaradi', () => {
+    expect(resolveDepositPercent(0)).toBe(1);
+    expect(resolveDepositPercent(-50)).toBe(1);
+    expect(resolveDepositPercent(150)).toBe(100);
+    expect(resolveDepositPercent(1000)).toBe(100);
+  });
+
+  it('foiz berilmasa env standartiga (DEPOSIT_PERCENT) qaytadi', () => {
+    const prev = process.env.DEPOSIT_PERCENT;
+    // config import vaqtida o'qilgani uchun module cache'ni tozalashimiz kerak
+    vi.resetModules();
+    process.env.DEPOSIT_PERCENT = '40';
+    return import('../config').then(async ({ config }) => {
+      vi.resetModules();
+      const { computeBookingPrice: compute } = await import('../utils/pricing');
+      const r = compute({ pricePerHour: 50000, durationHours: 2 });
+      expect(r.depositPercent).toBe(40);
+      expect(r.finalTotal).toBe(100000);
+      expect(r.advance).toBe(40000);
+      expect(r.remaining).toBe(60000);
+      if (prev === undefined) delete process.env.DEPOSIT_PERCENT;
+      else process.env.DEPOSIT_PERCENT = prev;
+    });
+  });
+
+  it('advance + remaining DOIM finalTotal ga teng (tiyingacha, promo/ballar bilan ham)', () => {
+    const cases = [
+      { pricePerHour: 10000, durationHours: 3 },
+      { pricePerHour: 10000, durationHours: 1.5, depositPercent: 17 },
+      { pricePerHour: 33333, durationHours: 2.5, depositPercent: 33 },
+      { pricePerHour: 10000, durationHours: 3, promo: { discountType: 'PERCENTAGE' as const, discountValue: 13 }, depositPercent: 45 },
+      { pricePerHour: 10000, durationHours: 3, pointsToUse: 7000, depositPercent: 7 },
+    ];
+    for (const c of cases) {
+      const r = computeBookingPrice(c);
+      expect(round2(r.advance + r.remaining)).toBe(r.finalTotal);
+      expect(r.advance).toBe(round2((r.finalTotal * r.depositPercent) / 100));
+    }
   });
 });

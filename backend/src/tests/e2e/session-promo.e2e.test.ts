@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { api, resetDb as reset, createUserDirect, createRoomFixture, nextIp, prisma } from './helpers';
-import { tashkentTodayISO } from '../../utils/time';
+import { tashkentTodayISO, tashkentDayISO, tashkentNowHHMM, parseTime, minutesToHHMM } from '../../utils/time';
 
 function auth(token: string) {
   return `Bearer ${token}`;
@@ -39,15 +39,28 @@ describe('E2E: Bron sessiyasi (check-in/check-out, min 1 soat billing)', () => {
 
   async function makeConfirmed(durationHours = 2, price = 40000) {
     const total = durationHours * (Number(zone.pricePerHour) || 20000);
+    // Sessiya oynasi JORIY Toshkent vaqtiga bog'lanadi — test kechqurun ham,
+    // erta tong ham vaqtga bog'liq bo'lib qolmasligi uchun. Sabab: startSessionGate
+    // `now >= start` va `now < end` ni tekshiradi; qat'iy "09:00-11:00" faqat
+    // ertalab ishga tushsa o'tar edi. Oyna 60 daqiqa — minimal 1 soatlik billing
+    // ham shu ichida sig'adi.
+    const nowMin = parseTime(tashkentNowHHMM()) ?? 720;
+    let startMin = nowMin - 2;
+    let dateISO = tashkentTodayISO();
+    if (startMin < 0) {
+      startMin += 1440;
+      dateISO = tashkentDayISO(-1);
+    }
+    const endMin = startMin + 60;
     return prisma.booking.create({
       data: {
         userId,
         roomId: room.id,
         zoneId: zone.id,
         computerId: pc.id,
-        date: new Date(`${tashkentTodayISO()}T00:00:00.000Z`),
-        startTime: '09:00',
-        endTime: '11:00',
+        date: new Date(`${dateISO}T00:00:00.000Z`),
+        startTime: minutesToHHMM(startMin),
+        endTime: minutesToHHMM(endMin),
         durationHours,
         totalPrice: total,
         finalPrice: total,
@@ -56,6 +69,10 @@ describe('E2E: Bron sessiyasi (check-in/check-out, min 1 soat billing)', () => {
         depositPercent: 30,
         pointsUsed: 0,
         status: 'CONFIRMED',
+        // To'lov va tasdiqlash oqimi: "Boshlash" faqat admin tasdig'idan keyin
+        // ishlaydi (startSessionGate -> BOOKING_NOT_APPROVED). Odatda to'lov
+        // tasdiqlanganda approvalStatus ham APPROVED bo'ladi.
+        approvalStatus: 'APPROVED',
       },
     });
   }
@@ -133,6 +150,9 @@ describe('E2E: Bron sessiyasi (check-in/check-out, min 1 soat billing)', () => {
         startTime: '00:00', endTime: '01:00', durationHours: 1,
         totalPrice: 20000, finalPrice: 20000, advanceAmount: 20000, remainingAmount: 0,
         pointsUsed: 0, status: 'PENDING',
+        // Tasdiqlangan, LEKIN to'lanmagan — shuning uchun startSessionGate
+        // aynan BOOKING_NOT_PAID qaytarishi kerak (tasdiqlash emas).
+        approvalStatus: 'APPROVED',
       },
     });
     const res = await api().post(`/api/bookings/${booking.id}/session/start`).set('Authorization', auth(userToken));

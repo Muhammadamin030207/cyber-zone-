@@ -3,6 +3,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../types';
 import { ok, created, badRequest, forbidden, notFoundMsg } from '../utils/response';
 import { toNumber, round2, isValidAmount } from '../utils/money';
+import { resolveDepositPercent } from '../utils/pricing';
 import { io } from '../lib/socket';
 import { Prisma } from '@prisma/client';
 import { getProvider, getProviderAvailability, isProviderAvailable, ProviderNotConfiguredError, ProviderUnavailableError, SANDBOX_CLICK, SANDBOX_PAYME, SANDBOX_UZUM, SANDBOX_PAYNET } from '../services/payments';
@@ -334,8 +335,12 @@ amount: Number(active.amount),
     const totalPaid = paidAmount(prevPayments);
     if (totalPaid >= finalPrice - 0.004) return badRequest(res, 'Bron to\'liq to\'langan');
 
-    // Depozit foizini server tomonidan qo'llash (default 30, min 20-ish)
-    const percent = cash ? Math.min(100, Math.max(config.payments.minDepositPercent, booking.depositPercent || 30)) : Math.min(100, Math.max(config.payments.minDepositPercent, depositPercent ?? booking.depositPercent ?? 30));
+    // Depozit foizi — QAT'IY SERVER AVTORITETI: faqat bronga yozilgan
+    // `booking.depositPercent` (bron yaratilgandagi config bo'yicha).
+    // Request body's `depositPercent` butunlay E'TIBORSIZ qoldiriladi:
+    // frontend buni pasaytirib (masalan 10%) to'lab, tasdiqlash chegarasini
+    // chetlab o'tmasligi kerak. Hech qayerda 30 hardcode emas.
+    const percent = Math.min(100, Math.max(config.payments.minDepositPercent, resolveDepositPercent(booking.depositPercent)));
     const requiredDeposit = round2((finalPrice * percent) / 100);
     const depositAlreadyPaid = round2(Math.min(totalPaid, requiredDeposit));
     const amount = round2(Math.max(0, requiredDeposit - depositAlreadyPaid));
@@ -511,6 +516,16 @@ export const getSandboxState = async (_req: AuthRequest, res: Response, next: Ne
 export const setSandboxState = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const enabled = Boolean(req.body?.enabled);
+    // PRODUCTION'DA TO'LOV TEST REJIMI YOQILMAYDI (spec §3). DB'ga ham
+    // yozilmaydi — aks holda keyingi boot'da "on" qiymatini o'qib, holat
+    // chalkash bo'lardi (barchaqli no-op).
+    if (process.env.NODE_ENV === 'production' && enabled) {
+      return res.status(403).json({
+        success: false,
+        error: 'Production muhitda to\'lov test rejimini yoqib bo\'lmaydi',
+        code: 'SANDBOX_FORBIDDEN_IN_PRODUCTION',
+      });
+    }
     await prisma.siteSetting.upsert({
       where: { key: 'payments.sandbox' },
       update: { value: enabled ? 'on' : 'off', updatedBy: req.user?.userId },

@@ -2,7 +2,6 @@
   "nav": {
     "home": "Home",
     "rooms": "Gaming zones",
-    "news": "News",
     "login": "Login",
     "register": "Register",
     "logout": "Logout",
@@ -32,21 +31,14 @@
     "heroSubtitle": "Find the best gaming zones, book and play",
     "searchPlaceholder": "Enter zone name or address...",
     "searchBtn": "Search",
-    "statsTitle": "On the platform",
     "popularTitle": "Popular zones",
     "popularSubtitle": "The best gaming spots",
-    "featuresTitle": "Why Cyber-ZONE?",
-    "features": {
-      "book": "Fast booking",
-      "bookDesc": "Online booking, real-time PC availability",
-      "premium": "Premium zones",
-      "premiumDesc": "Modern PCs, VIP areas",
-      "secure": "Secure payments",
-      "secureDesc": "Payme, Click and UZCARD payments"
-    },
-    "ctaTitle": "Own a gaming zone?",
-    "ctaSubtitle": "Register and add your zone to the platform",
-    "ctaBtn": "Become an admin"
+    "roomsCount": "{count} zones in total",
+    "roomsCountTruncated": "Showing {shown} of {count}",
+    "roomsEmpty": "No zones added yet",
+    "mapTitle": "All zones on the map",
+    "mapSubtitle": "Find the nearest gaming zone in Tashkent",
+    "mapCta": "Open the map"
   },
   "rooms": {
     "title": "Gaming zones",

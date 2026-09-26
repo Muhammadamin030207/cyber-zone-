@@ -18,43 +18,23 @@ import { ok, badRequest, forbidden, notFoundMsg, serverError } from '../utils/re
 import bcrypt from 'bcryptjs';
 import { verifyTotp } from '../utils/totp';
 import { sendSecurityAlert, clientIp, describeUserAgent, recordSecurityEvent } from '../lib/securityAlerts';
+import { setAuthChallenge, consumeAuthChallenge, type AuthChallengeEntry } from '../lib/redis';
 
 // ============ SERVER-SIDE CHALLENGE STORAGE ============
 // Challenge faqat serverda saqlanadi — client mustaqil yaratmaydi, signature
-// server tomonidan tekshiriladi. Hozircha in-memory (bitta instance uchun);
-// ko'p-instansiyali deploy'da Redis'ga ko'chirilishi kerak.
+// server tomonidan tekshiriladi. Ko'p instansiyali deploy'da (1000+ foydalanuvchi)
+// in-memory Map ISHLAMAYDI: "options" instansiya A, "verify" instansiya B
+// bo'lsa challenge topilmaydi. Shu sababli Redis (GETDEL, single-use) ishlatiladi.
+// Redis tayyor bo'lmasa — FAIL CLOSED: challenge berilmaydi va tekshirilmaydi.
 const challengeTTLMs = 5 * 60 * 1000; // 5 daqiqa
-const challengeStore = new Map<string, ChallengeEntry>();
 
-interface ChallengeEntry {
-  value: string;
-  expiresAt: number;
-  // Challenge qaysi origin/rpID uchun chiqarilgan — verify bosqichida aynan
-  // shu qiymatlar tekshiriladi (origin swap hujumining oldini oladi).
-  origin?: string;
-  rpID?: string;
-}
-
-function setChallenge(key: string, value: string, rp?: { origin: string; rpID: string }) {
-  challengeStore.set(key, {
-    value,
-    expiresAt: Date.now() + challengeTTLMs,
-    origin: rp?.origin,
-    rpID: rp?.rpID,
-  });
-  setTimeout(() => challengeStore.delete(key), challengeTTLMs);
+function setChallenge(key: string, value: string, rp?: { origin: string; rpID: string }): Promise<boolean> {
+  return setAuthChallenge(key, value, rp, challengeTTLMs);
 }
 
 /** Challenge + (mavjud bo'lsa) berilgan origin/rpID'ni qaytaradi. Single-use. */
-function getChallenge(key: string): Pick<ChallengeEntry, 'value' | 'origin' | 'rpID'> | null {
-  const entry = challengeStore.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt < Date.now()) {
-    challengeStore.delete(key);
-    return null;
-  }
-  challengeStore.delete(key); // single-use
-  return { value: entry.value, origin: entry.origin, rpID: entry.rpID };
+function getChallenge(key: string): Promise<AuthChallengeEntry | null> {
+  return consumeAuthChallenge(key);
 }
 
 /** Frontend origin — WebAuthn expectedOrigin (mavjud FRONTEND_URLS dan). */
@@ -126,7 +106,13 @@ export async function registerOptions(req: AuthRequest, res: Response, next: Nex
     });
 
     // Challenge serverda saqlanadi (clientga berilmaydi)
-    setChallenge(`wa:reg:${user.id}`, options.challenge, requestRp(req) || undefined);
+    const stored = await setChallenge(`reg:${user.id}`, options.challenge, requestRp(req) || undefined);
+    if (!stored) {
+      return res.status(503).json({
+        success: false,
+        message: 'Passkey xizmati vaqtincha ishlamoqda. Birozdan keyin qayta urinib ko\'ring.',
+      });
+    }
 
     return ok(res, options);
   } catch (err) {
@@ -142,7 +128,7 @@ export async function registerVerify(req: AuthRequest, res: Response, next: Next
     if (!response) return badRequest(res, 'WebAuthn response talab qilinadi');
     const userId = req.user!.userId;
 
-    const challenge = getChallenge(`wa:reg:${userId}`);
+    const challenge = await getChallenge(`reg:${userId}`);
     if (!challenge) return badRequest(res, 'Registratsiya challenge muddati o\'tgan. Qayta urinib ko\'ring.');
     const expectedChallenge = challenge.value;
 
@@ -224,7 +210,10 @@ export async function authOptions(req: Request, res: Response, next: NextFunctio
         allowCredentials: [],
         userVerification: 'preferred',
       });
-      setChallenge('wa:auth:discoverable', discoverableOptions.challenge, requestRp(req) || undefined);
+      const stored = await setChallenge('auth:discoverable', discoverableOptions.challenge, requestRp(req) || undefined);
+      if (!stored) {
+        return res.status(503).json({ success: false, message: 'Passkey xizmati vaqtincha ishlamoqda.' });
+      }
       return ok(res, { options: discoverableOptions, discoverable: true });
     }
 
@@ -254,7 +243,10 @@ export async function authOptions(req: Request, res: Response, next: NextFunctio
       userVerification: 'preferred',
     });
 
-    setChallenge(`wa:auth:${user.id}`, options.challenge, requestRp(req) || undefined);
+    const stored = await setChallenge(`auth:${user.id}`, options.challenge, requestRp(req) || undefined);
+    if (!stored) {
+      return res.status(503).json({ success: false, message: 'Passkey xizmati vaqtincha ishlamoqda.' });
+    }
 
     return ok(res, { options, userId: user.id });
   } catch (err) {
@@ -319,7 +311,7 @@ export async function authVerify(req: Request, res: Response, next: NextFunction
     }
 
     const resolvedUserId = passkey.userId;
-    const challenge = getChallenge(twoFactorMode || userId ? `wa:auth:${resolvedUserId}` : 'wa:auth:discoverable');
+    const challenge = await getChallenge(twoFactorMode || userId ? `auth:${resolvedUserId}` : 'auth:discoverable');
     if (!challenge) return badRequest(res, 'Authentication challenge muddati o\'tgan. Qayta urinib ko\'ring.');
     const expectedChallenge = challenge.value;
 

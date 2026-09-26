@@ -23,11 +23,12 @@ import supportRoutes from './routes/support.routes';
 import loyaltyRoutes from './routes/loyalty.routes';
 import settingsRoutes from './routes/settings.routes';
 import { errorHandler, notFound } from './middlewares/error';
+import { requestContext } from './middlewares/requestContext';
 import prisma from './lib/prisma';
 import { verifyAccessToken } from './lib/jwt';
-import { io } from './lib/socket';
+import { io, configureSocketAdapter } from './lib/socket';
 import { redisClient } from './lib/redis';
-import { scheduleBookingExpiry } from './utils/bookingExpiry';
+import { scheduleBookingWorker } from './utils/bookingWorker';
 import { setSandboxForced } from './config/paymentsRuntime';
 
 const app = express();
@@ -125,6 +126,10 @@ redisClient.connect().catch((e: Error) => console.warn('[REDIS]', e.message));
 // global rate-limit butun platformani birga cheklab qo'yadi.
 app.set('trust proxy', 1);
 
+// Request ID + REQUEST LOG (spec §42/§60). Auth'dan OLDIN turadi — hatolar
+// ham, 404 ham requestId oladi.
+app.use(requestContext);
+
 app.use(helmet());
 app.use(
   cors({
@@ -156,10 +161,12 @@ app.use(
 );
 
 // Request log (dev)
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
+if (process.env.NODE_ENV !== 'production') {
+  app.use((req, _res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+    next();
+  });
+}
 
 // Routes
 app.get('/', (_req, res) => {
@@ -170,26 +177,39 @@ app.get('/', (_req, res) => {
   });
 });
 
-// ============ HEALTH CHECK ============
-app.get('/api/health', async (_req, res) => {
+// ============ HEALTH CHECK (spec §45) ============
+// `/api/health` — liveness: jarayon javob bermoqda (Render healthCheckPath).
+// `/api/ready`  — readiness: DB va Redis haqiqatan ishlayaptimi.
+// Ikkalasi ham FAQAT holat qaytaradi — hech qanday secret/URL/credential yo'q.
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: Math.round(process.uptime()), timestamp: new Date().toISOString() });
+});
+
+app.get('/api/ready', async (_req, res) => {
+  const checks: Record<string, string> = {};
+  let ready = true;
+
   try {
     await prisma.$queryRaw`SELECT 1`;
-    let redisStatus = 'disconnected';
-    try {
-      redisStatus = redisClient.status === 'ready' ? 'connected' : 'disconnected';
-    } catch {
-      /* ignore */
-    }
-    res.json({
-      status: 'ok',
-      db: 'connected',
-      redis: redisStatus,
-      uptime: Math.round(process.uptime()),
-      timestamp: new Date().toISOString(),
-    });
-  } catch (err) {
-    res.status(503).json({ status: 'error', db: 'disconnected', error: (err as Error).message });
+    checks.database = 'ok';
+  } catch {
+    checks.database = 'unavailable';
+    ready = false;
   }
+
+  try {
+    checks.redis = redisClient.status === 'ready' ? 'ok' : 'unavailable';
+    // Redis majburiy emas (single-instance dev) — readinessni buzmaydi, faqat
+    // bildiradi. WebAuthn challenge store esa Redis'siz "fail closed" ishlaydi.
+  } catch {
+    checks.redis = 'unavailable';
+  }
+
+  res.status(ready ? 200 : 503).json({
+    status: ready ? 'ready' : 'not_ready',
+    checks,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.use('/api/auth', authRoutes);
@@ -216,8 +236,16 @@ app.use(errorHandler);
 httpServer.listen(config.port, () => {
   console.log(`🚀 Cyber-ZONE API ${config.port}-portda ishlamoqda`);
   console.log(`   Frontendlar: ${config.frontendUrls.join(', ')}`);
-  // Muddati o'tgan to'lanmagan bronlarni davriy tozalash
-  scheduleBookingExpiry();
+
+  // Kengaytirilgan (multi-instance) rejim: Socket.IO xabarlari Redis orqali
+  // barcha instansialarga tarqatiladi — bitta serverda chiqish, boshqada
+  // bo'sh ko'rinmasligi kafolatlanadi.
+  void configureSocketAdapter(io);
+
+  // Bron/sessiya worker: muddati o'tgan "band qilish"larni bo'shatadi va
+  // TAYMER TUGAGAN sessiyalarni o'z-o'zidan yopadi (server o'chsa ham
+  // qayta ishga tushganda tiklanadi).
+  scheduleBookingWorker();
 });
 
 // SUPER_ADMIN panel orqali yoqilgan to'lov test rejimini qayta ishga tushirishda tiklaymiz

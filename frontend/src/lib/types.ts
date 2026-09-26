@@ -124,17 +124,37 @@ export interface Booking {
   notes?: string | null;
   sessionStartedAt?: string | null;
   sessionEndedAt?: string | null;
+  sessionEndsAt?: string | null;
+  autoClosed?: boolean;
+  holdExpiresAt?: string | null;
   actualDurationMinutes?: number | null;
   actualPrice?: number | string | null;
   billingAdjustment?: number | string | null;
   minBillingMinutes?: number;
+  // Admin tasdiqlashi — MOLIYAVIY holatdan (status) MUSTAQIL.
+  // "Boshlash" faqat approvalStatus === 'APPROVED' bo'lganda ishlaydi.
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  approvedAt?: string | null;
+  approvedById?: string | null;
+  rejectedAt?: string | null;
+  rejectedById?: string | null;
+  rejectionReason?: string | null;
   createdAt: string;
-  room?: Pick<Room, 'id' | 'name' | 'address'>;
+  room?: Pick<Room, 'id' | 'name' | 'address' | 'ownerId'>;
   zone?: Pick<Zone, 'id' | 'name' | 'type' | 'pricePerHour'>;
   computer?: Pick<Computer, 'id' | 'name' | 'specs'>;
   promoCode?: Pick<PromoCode, 'id' | 'code' | 'discountType' | 'discountValue'>;
   user?: Pick<User, 'id' | 'fullName' | 'email' | 'phone'>;
   payments?: Payment[];
+  evidences?: Array<{
+    id: string;
+    fileUrl: string;
+    fileName: string;
+    mimeType: string;
+    status: 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+    reviewNote?: string | null;
+    createdAt: string;
+  }>;
 }
 
 export interface BookingSessionState {
@@ -143,13 +163,24 @@ export interface BookingSessionState {
   bookedStart: string;
   bookedEnd: string;
   elapsedMinutes: number;
+  /** Minimal 1 soatlik billing hisobiga tushirilgan daqiqalar. */
   billedMinutes: number;
+  /** Server hisoblangan qo'pay to'langan soatlar (to'liq kasr). */
+  billedHours?: number;
   remainingMs: number;
   overdueMs: number;
   actualPrice: number | null;
   prepaidValue: number;
   totalPaid: number;
   pointsUsed: number;
+  /** Taymer tugash vaqti (auto-close). */
+  sessionEndsAt?: string | null;
+  autoCloseInMs?: number | null;
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  /** "Boshlash" tugmasi hozir bosilishi mumkinmi. */
+  canStart?: boolean;
+  /** Bosib bo'lmaydigan sabab kodi (masalan BOOKING_NOT_APPROVED). */
+  startBlockedBy?: string | null;
 }
 
 export interface Payment {
@@ -158,10 +189,12 @@ export interface Payment {
   userId: string;
   amount: number | string;
   type: 'ADVANCE' | 'REMAINING';
-  method?: 'PAYME' | 'CLICK' | 'UZCARD' | 'HUMO' | 'UZUM' | 'PAYNET' | 'CASH' | null;
+  method?: 'PAYME' | 'CLICK' | 'UZCARD' | 'HUMO' | 'UZUM' | 'PAYNET' | 'CASH' | 'TRANSFER' | null;
   provider?: 'PAYME' | 'CLICK' | 'UZUM' | 'PAYNET' | null;
   status: 'CREATED' | 'PENDING' | 'REDIRECT_REQUIRED' | 'PROCESSING' | 'PAID' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'EXPIRED' | 'REFUNDED';
   paidAt?: string | null;
+  isDebt?: boolean;
+  dueAt?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 

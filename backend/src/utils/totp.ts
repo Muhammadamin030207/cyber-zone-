@@ -16,52 +16,111 @@ const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 // (encryptTotpSecret) nuqtalarini bitta chokepoint qilib birlashtiradi, shuning
 // uchun auth/webauthn/twoFactor controller'larida hech narsa o'zgartirilmaydi.
 //
-// Mavjud (eski, ochiq) secretlar ham ishlaydi: agar qiymat `ck1:` prefiksiga
-// ega bo'lmasa — legacy plaintext deb qabul qilinadi va SHU SECRET bilan
-// verify qilinadi (foydalanuvchi kodini kiritishi shart emas). Keyingi
-// `twoFactorSecret: encryptTotpSecret(...)` yozuvi uni avtomatik yangilaydi.
+// Mavjud (eski, ochiq) secretlar ham ishlaydi: agar qiymat `ct1:`/`ck1:`
+// prefiksiga ega bo'lmasa — legacy plaintext deb qabul qilinadi va SHU SECRET
+// bilan verify qilinadi (foydalanuvchi kodini kiritishi shart emas).
+// Muvaffaqiyatli keyingi verify'da qiymat `encryptTotpSecret(...)` bilan
+// qayta yoziladi (shifrlangan holatga o'tadi).
 //
-// Kalit manbasi: `TOTP_AT_REST_KEY` (32 bayt hex yoki base64). O'rnatilmagan
-// bo'lsa — `JWT_SECRET`'dan deterministik HKDF-SHA256 orqali olinadi (xuddi
-// shu ish jarayonida, DB'dagi eski yozuvlar ochib berilishi mumkinligi uchun
-// kalit o'zgarishi PORCHda eski secret buzilishiga olib keladi — shuning uchun
-// production'da alohida TOTP_AT_REST_KEY o'rnating).
-const TOTP_ENC_PREFIX = 'ck1:';
+// Kalit manbasi: `TOTP_AT_REST_KEY` — 32+ belgi. O'rnatilmagan yoki qisqa
+// bo'lsa — `totpAtRestKey()` JAZIBAT qiladi: zaif fallback (JWT_SECRET yoki
+// dev constanti) ISHLATILMAYDI, aks holda DB'dagi 2FA secret'lari taxmin
+// qilinadigan kalit bilan "shifrlangan" bo'lib qolardi. Render'da bu qiymat
+// `generateValue: true` orqali avtomatik yaratiladi. Kalitni almashtirish =
+// DB'dagi barcha shifrlangan secret'lar buziladi (2FA qayta o'rnatiladi).
+export const TOTP_AT_REST_KEY_MIN_LENGTH = 32;
 
-function totpAtRestKey(): Buffer {
-  const raw = process.env.TOTP_AT_REST_KEY || process.env.JWT_SECRET || 'cyber-zone-dev-totp-key';
-  const info = Buffer.from('cyber-zone:totp-at-rest:v1', 'utf8');
-  return crypto.createHmac('sha256', raw).update(info).digest(); // 32 bayt
+const TOTP_ENC_PREFIX = 'ct1:';
+
+const TOTP_ENC_VERSIONS: Record<string, string> = {
+  // ck1: — birinchi (ishlatilmagan) format; faqat o'qish uchun qo'llab-quvvatlanadi.
+  'ck1:': 'cyber-zone:totp-at-rest:v1',
+  // ct1: — joriy format: ct1:<base64(iv[12] || tag[16] || ciphertext)>
+  [TOTP_ENC_PREFIX]: 'cyber-zone:totp-at-rest:v2',
+};
+
+function totpAtRestKey(info: string): Buffer {
+  const raw = String(process.env.TOTP_AT_REST_KEY || '').trim();
+  if (raw.length < TOTP_AT_REST_KEY_MIN_LENGTH) {
+    throw new Error(
+      'TOTP_AT_REST_KEY sozlanmagan yoki 32+ belgidan kam. 2FA secretlarini AES-256-GCM bilan ' +
+        'shifrlash uchun kamida 32 ta tasodifiy belgi kerak (masalan: openssl rand -base64 32). ' +
+        'Zaif fallback kalit ISHLATILMAYDI.',
+    );
+  }
+  return crypto.createHmac('sha256', raw).update(info).digest();
+}
+
+/** Kalit konfiguratsiyasini oldindan tekshiradi (server boot'ida chaqirish uchun). */
+export function assertTotpAtRestKey(): void {
+  totpAtRestKey(TOTP_ENC_VERSIONS[TOTP_ENC_PREFIX]);
 }
 
 /** Secret'ni at-rest shifrlab qaytaradi (DB'da mana shu saqlanadi). */
 export function encryptTotpSecret(secretBase32: string): string {
   const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', totpAtRestKey(), iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', totpAtRestKey(TOTP_ENC_VERSIONS[TOTP_ENC_PREFIX]), iv);
   const ct = Buffer.concat([cipher.update(secretBase32, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   const payload = Buffer.concat([iv, tag, ct]).toString('base64');
   return `${TOTP_ENC_PREFIX}${payload}`;
 }
 
-/** Shifrlangan secret'ni ochadi. Legacy (ochiq) bo'lsa — o'zini qaytaradi. */
+function encPrefixOf(stored: string): string | null {
+  const prefix = stored.slice(0, 4);
+  return Object.prototype.hasOwnProperty.call(TOTP_ENC_VERSIONS, prefix) ? prefix : null;
+}
+
+/** Qiymat shifrlangan formatda (ct1:/ck1:) yoki legacy (ochiq) ekanini aniqlaydi. */
+export function isEncryptedTotpSecret(stored: string | null | undefined): boolean {
+  return encPrefixOf(String(stored || '')) !== null;
+}
+
+function decryptWithPrefix(stored: string, prefix: string): string {
+  const buf = Buffer.from(stored.slice(prefix.length), 'base64');
+  if (buf.length < 28) throw new Error('TOTP secret ciphertext buzuq (juda qisqa)');
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const ct = buf.subarray(28);
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    totpAtRestKey(TOTP_ENC_VERSIONS[prefix]),
+    iv,
+  );
+  decipher.setAuthTag(tag);
+  const plain = Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+  if (!plain) throw new Error('TOTP secret ciphertext bo\'sh');
+  return plain;
+}
+
+/**
+ * Shifrlangan secret'ni ochadi. Legacy (ochiq) bo'lsa — o'zini qaytaradi.
+ * Ciphertext buzilgan/kalit noto'g'ri bo'lsa — THROW qiladi (jazibatsiz
+ * "ochiq" deb qabul qilinmaydi, aks holda buzuq yozuv ham "secret" bo'lib
+ * ko'rinib qolardi).
+ */
 export function decryptTotpSecret(stored: string): string {
-  if (!stored || !stored.startsWith(TOTP_ENC_PREFIX)) return stored; // legacy plaintext
-  try {
-    const buf = Buffer.from(stored.slice(TOTP_ENC_PREFIX.length), 'base64');
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(12, 28);
-    const ct = buf.subarray(28);
-    const decipher = crypto.createDecipheriv('aes-256-gcm', totpAtRestKey(), iv);
-    decipher.setAuthTag(tag);
-    const plain = Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
-    if (!plain) return stored;
-    return plain;
-  } catch {
-    // Kalit o'zgargan yoki buzuq yozuv — ochiq deb hisoblanmaydi, asl qiymatni qaytaramiz.
-    // (verify keyin muvaffaqiyatsiz bo'ladi; admin sekretni qayta o'rnatishi mumkin.)
-    return stored;
-  }
+  const value = String(stored || '');
+  const prefix = encPrefixOf(value);
+  if (!prefix) return value; // legacy plaintext
+  return decryptWithPrefix(value, prefix);
+}
+
+/**
+ * DB'dagi qiymatni o'qish uchun yagona nuqta (controller'lar shuni ishlatadi):
+ * shifrlangan bo'lsa — ochadi; legacy (ochiq) bo'lsa `needsReencrypt: true`
+ * bilan qaytaradi, shunda muvaffaqiyatli verify'dan keyingi yozuvda qiymat
+ * avtomatik ravishda shifrlangan holatga o'tadi.
+ */
+export function readTotpSecret(stored: string | null | undefined): {
+  secret: string;
+  encrypted: boolean;
+  needsReencrypt: boolean;
+} {
+  const value = String(stored || '');
+  const prefix = encPrefixOf(value);
+  if (!prefix) return { secret: value, encrypted: false, needsReencrypt: Boolean(value) };
+  return { secret: decryptWithPrefix(value, prefix), encrypted: true, needsReencrypt: false };
 }
 
 /** Xavfsiz tasodifiy base32 secret (default 20 bayt = 160 bit, RFC tavsiyasi). */
@@ -129,9 +188,15 @@ export function generateTotp(secretBase32: string, timestampMs = Date.now(), ste
 /**
  * Kodni tekshirish. ±1 qadam (±30s) tolerance — foydalanuvchi soati biroz
  * farq qilishi mumkin. Vaqtga bog'liq bo'lmagan taqqoslash ishlatiladi.
+ *
+ * Birinchi argument DB'dagi qiymat bo'lishi MUMKIN: shifrlangan (`ct1:`) bo'lsa
+ * — avtomatik ochiladi, legacy ochiq bo'lsa — o'zicha ishlatiladi. Shu sabab
+ * bu funksiya barcha call-site'lar (auth/webauthn/twoFactor) uchun xavfsiz
+ * chokepoint bo'lib qoladi — hech kim shifrlangan qiymatni base32 deb
+ * ishlatmaydi.
  */
 export function verifyTotp(
-  secretBase32: string,
+  storedSecret: string,
   token: string,
   opts: { window?: number; stepSeconds?: number; digits?: number; timestampMs?: number } = {}
 ): boolean {
@@ -139,6 +204,7 @@ export function verifyTotp(
   const normalized = String(token || '').replace(/\D/g, '');
   if (normalized.length !== digits) return false;
 
+  const secretBase32 = isEncryptedTotpSecret(storedSecret) ? decryptTotpSecret(storedSecret) : storedSecret;
   const secret = base32Decode(secretBase32);
   const counter = Math.floor(timestampMs / 1000 / stepSeconds);
   for (let i = -window; i <= window; i += 1) {

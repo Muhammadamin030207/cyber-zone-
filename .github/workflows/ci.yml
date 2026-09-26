@@ -1,0 +1,85 @@
+name: CI
+
+# Push va PR'da ishlaydi. Hech qanday deploy token/secret KERAK EMAS —
+# bu ish faqat tekshiruv (lint/typecheck/test/build).
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Xuddi shu ish kod muallifining lokal muhitini ifloslantirmasin:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (typecheck + unit tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # npm ci o'zi engine tekshiruvini ogohlantiradi (.nvmrc = 24).
+      - name: Install
+        run: npm ci --include=dev
+
+      # Prisma client generatsiyasi build'dan OLDIN — @prisma/client tiplari
+      # shundan keladi (typecheck uchun ham zarur).
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Faqat unit testlar: vitest.config.ts allaqachon `src/tests/e2e/**` ni
+      # chiqaradi (E2E real DB talab qiladi — CI'da ishga tushmaydi).
+      - name: Unit tests
+        run: npm test
+
+  frontend:
+    name: Frontend (typecheck + lint + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        # HOZIRCHA bloklamaydi (continue-on-error): repoda ~150 ta oldindan
+        # bor ESLint xatosi (asosan `@typescript-eslint/no-explicit-any`) —
+        # ular frontend/store va komponentlarida, boshqa muallif fayllarida.
+        # Typecheck va build BLOKLASHUVCHI qoladi; lint xatolari tuzatilgach
+        # bu qatorni bloklovchi qilib aylantirish mumkin.
+        continue-on-error: true
+        run: npx eslint .
+
+      # Build uchun maxfiy qiymat kerak emas: API/Backend URL topilmasa
+      # next.config.ts localhost fallback'idan foydalanadi.
+      - name: Build
+        run: npx next build

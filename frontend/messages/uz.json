@@ -2,7 +2,6 @@
   "nav": {
     "home": "Bosh sahifa",
     "rooms": "Kompyuter xonalar",
-    "news": "Yangiliklar",
     "login": "Kirish",
     "register": "Ro'yxatdan o'tish",
     "logout": "Chiqish",
@@ -32,21 +31,14 @@
     "heroSubtitle": "Eng yaxshi kompyuter xonalarini toping, bron qiling va o'ynang",
     "searchPlaceholder": "Xona yoki manzil nomini yozing...",
     "searchBtn": "Qidirish",
-    "statsTitle": "Platformada",
     "popularTitle": "Mashhur xonalar",
     "popularSubtitle": "Dunyoning eng yaxshi o'yin maskanlari",
-    "featuresTitle": "Nega Cyber-ZONE?",
-    "features": {
-      "book": "Tez bron",
-      "bookDesc": "Onlayn bron qilish, real vaqtda kompyuter bandligi",
-      "premium": "Premium xonalar",
-      "premiumDesc": "Zamonaviy kompyuterlar, VIP zonalar",
-      "secure": "Xavfsiz to'lov",
-      "secureDesc": "Payme, Click va UZCARD to'lovlari"
-    },
-    "ctaTitle": "Kompyuter xonangiz borami?",
-    "ctaSubtitle": "Ro'yxatdan o'ting va xonangizni platformaga qo'shing",
-    "ctaBtn": "Admin bo'lish"
+    "roomsCount": "Jami {count} ta xona",
+    "roomsCountTruncated": "Ko'rsatilgan {shown} / {count} ta xona",
+    "roomsEmpty": "Hozircha xona qo'shilmagan",
+    "mapTitle": "Barcha xonalar xaritada",
+    "mapSubtitle": "Toshkent bo'ylab eng yaqin gaming zone'ni toping",
+    "mapCta": "Xaritada ochish"
   },
   "rooms": {
     "title": "Kompyuter xonalar",

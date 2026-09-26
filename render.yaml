@@ -1,66 +1,171 @@
+# ============================================================================
+# Cyber-ZONE — Render Blueprint
+# https://render.com/docs/blueprint-spec
+#
+# PLAN HAQIDA (MUHIM):
+#   `plan: free` — FAQAT dev/test. Free web service 15 daqiqa kutgandan keyin
+#   "sleep"ga o'tadi (cold start ~1-50s), free Postgres 30 kundan keyin
+#   butunlay o'chadi, free Redis/keyvalue ham vaqt cheklangan.
+#   Ishlab chiqarish (production) uchun `starter` (yoki undan yuqori) SHART:
+#     * doimiy uptime (sleep yo'q)      — healthCheckPath ishlaydi
+#     * barqaror Postgres (durable, avtomatik backup)
+#     * barqaror/durable Redis (keyvalue snapshot)
+#     * `preDeployCommand` faqat PAID (Starter+) web service'da ishlaydi —
+#       `prisma migrate deploy` ni yangi release'dan OLDIN bajarish uchun.
+#
+#   `render blueprints validate ./render.yaml` BUGUN quyidagini xabar beradi:
+#     "pre-deploy command is not supported for free tier services"
+#   Bu SCHEMA xatosi emas — reja (plan) cheklovi. Yechim: pastdagi web service
+#   `plan: starter` qiling (bitta qator). Keyin validator faqat hisob
+#   holatiga bog'liq `need_payment_info` ni ko'rsatadi (Render hisobida
+#   to'lov usuli bo'lishi kerak — bu YAML masalasi emas).
+#
+#   ESDA: `SKIP_MIGRATE_ON_BOOT` + `preDeployCommand` juftligi bir-birini
+#   to'ldiradi (migratsiya faqat bir marta bajariladi). Ikkalasini ham
+#   olib tashlasangiz (masalan free'da preDeployCommand'ni o'chirib qo'ysangiz)
+#   migratsiya umuman BAJARILMAYDI — chunki server.ts `SKIP_MIGRATE_ON_BOOT`
+#   bo'lishi faqat bo'lishiga qaraydi ("false" ham qiymat deb hisoblanadi).
+# ============================================================================
+
+databases:
+  # PostgreSQL — backend uchun asosiy ombor (Render Postgres).
+  # `databases:` kaliti allaqachon "postgresql" turini bildiradi: Render'ning
+  # o'z validatori (`render blueprints validate`) `databases:` ichida `type`
+  # maydonini qabul qilmaydi ("field type not found in type file.Database"),
+  # shuning uchun bu yerda `type` yozilmaydi. `type` faqat `services:` da kerak.
+  #
+  # NOMLARI AT KETMA QOLDIRILGAN (cyberarena-db / cyberarena): Render
+  # blueprint'dagi nom = haqiqiy resurs nomi. Nomni o'zgartirsak, Render
+  # ESKI (ma'lumotli) bazani tark etib YANGI bo'sh bazani yaratadi —
+  # barcha foydalanuvchilar/bronnlar "yo'qoladi". Faqat `type`/kalit
+  # tuzilishi (xato bo'lgan qismlar) tuzatildi.
+  - name: cyberarena-db
+    plan: free
+    databaseName: cyberarena
+    user: cyberarena
+    postgresMajorVersion: "16"
+    ipAllowList: [] # Render ichki tarmoqi (web service) — tashqi IP kirish yopiq
 
 services:
-  # PostgreSQL ma'lumotlar bazasi
-  - type: pgsql
-    name: cyberarena-db
-    plan: free
-    database: cyberarena
-    user: cyberarena
-    ipAllowList: []
-
-  # Redis
-  - type: redis
+  # --------------------------------------------------------------------------
+  # Redis (Render Key Value) — cache, rate limit va WebAuthn challenge store.
+  # Nom ham o'zgartirilmadi (cyberarena-redis) — mavjud bo'lsa bir xil
+  # resursga bog'lanamiz, aks holda yangisi yaratiladi (Redis yo'qotilsa
+  # hech nima buzilmaydi: cache, rate limit hisobi va challenge'lar vaqtincha
+  # o'tadi).
+  # `persistenceMode` faqat `snapshot` qiymatini qabul qiladi (Render'ning
+  # validatori boshqa qiymatni, jumladan `disabled`ni rad etadi) — eski kalit
+  # va challenge'lar eskirib (TTL) ketadi, `allkeys-lru` esa xotirani
+  # chegaralaydi. Starter rejada bu snapshot ishlaydi va restart'dan keyin
+  # ma'lumot saqlanadi.
+  # --------------------------------------------------------------------------
+  - type: keyvalue
     name: cyberarena-redis
     plan: free
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+    persistenceMode: snapshot
 
-  # Backend API (frontend Vercel'da)
+  # --------------------------------------------------------------------------
+  # Backend API — Render'da (frontend esa Vercel'da).
+  # DIQQAT: `name` o'zgartirilsa, Render'dagi LIVE service nomi ham
+  # o'zgarishi kerak (Render nomi o'zgartirsa, xotira/domeninga ta'sir qiladi).
+  # Bu yerda live nomi — cyberzone-backend-api.
+  # --------------------------------------------------------------------------
   - type: web
-    name: cyberarena-api
+    name: cyberzone-backend-api
     plan: free
-    env: node
+    runtime: node
     rootDir: backend
-    buildCommand: npm install --include=dev && npx prisma generate && npm run build && npx prisma migrate deploy
+    buildCommand: npm ci --include=dev && npx prisma generate && npm run build
+    # Migratsiya deploy'da bir marta bajariladi (build'da emas) —
+    # SKIP_MIGRATE_ON_BOOT=true tufayli server.ts ham migratsiyani
+    # qayta ishga tushirmaydi (ikki marta emas).
+    preDeployCommand: npx prisma migrate deploy
     startCommand: npm start
     healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
+      # ---------- Tarmoq / infratuzilma ----------
       - key: DATABASE_URL
         fromDatabase:
           name: cyberarena-db
           property: connectionString
       - key: REDIS_URL
-        fromDatabase:
+        fromService:
           name: cyberarena-redis
+          type: keyvalue
           property: connectionString
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      # `true` — migratsiyalar faqat preDeployCommand'da; app boot'da
+      # `prisma migrate deploy` QAYTARMASIN (ikki marta ishga tushmasin).
+      - key: SKIP_MIGRATE_ON_BOOT
+        value: "true"
+
+      # ---------- JWT (Render generatsiya qiladi; qiymatni hech qayerda
+      #            saqlamaslik — dashboard'da ham ko'rinmaydi) ----------
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
         generateValue: true
-      # Vercel'dagi frontend domenlari (vergul bilan bir nechta bo'lishi mumkin):
+      - key: ACCESS_TOKEN_EXPIRES
+        value: 15m
+      - key: REFRESH_TOKEN_EXPIRES
+        value: 7d
+
+      # ---------- 2FA (TOTP) secret'ini bazada shifrlash kaliti ----------
+      # AES-256-GCM kaliti shundan hosil qilinadi. O'zgartirilsa — DB'dagi
+      # barcha shifrlangan TOTP secret'lari buziladi (2FA qayta o'rnatish
+      # kerak bo'ladi). generateValue:true — Render tasodifiy, maxfiy qiymat
+      # beradi; qiymatni hech qayerda (git/log) saxlama.
+      - key: TOTP_AT_REST_KEY
+        generateValue: true
+
+      # ---------- CORS / frontend domenlari (vergul bilan) ----------
       - key: FRONTEND_URLS
         value: https://cyber-zone-delta.vercel.app, https://frontend-six-bay-25.vercel.app, https://frontend-fullstacks-projects-ffc4c9c9.vercel.app, https://cyber-zone-fullstacks-projects-ffc4c9c9.vercel.app, http://localhost:3006
+
+      # ---------- Google OAuth (dashboard'da qo'lda) ----------
       - key: GOOGLE_CLIENT_ID
         sync: false
+      # HAZIRDA ISHLATILMAYDI: kod faqat GOOGLE_CLIENT_ID ni (audience)
+      # tekshiradi (server-side code exchange yo'q). config/index.ts da
+      # o'qiladi, shuning uchun o'chirilmadi — config kodini ham o'zgartirish
+      # kerak bo'lardi. Keyingi o'zgarishda ikkalasini birga olib tashlang.
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+
+      # ---------- SUPER_ADMIN (birinchi admin, dashboard'da) ----------
       - key: SUPER_ADMIN_EMAIL
         sync: false
       - key: SUPER_ADMIN_PASSWORD
         sync: false
       - key: SUPER_ADMIN_NAME
         sync: false
-      # Gemini AI — Render dashboard'da qo'lda o'rnating
+
+      # ---------- AI: Gemini (Render dashboard'da qo'lda) ----------
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
-      # Claude AI — ANTHROPIC_API_KEY o'rnatilsa Claude ustunlik bilan ishlatiladi
+      - key: GEMINI_FALLBACK_MODEL
+        value: gemini-flash-lite-latest
+      # ---------- AI: Claude / Anthropic — kalit o'rnatilsa Claude ustun ----------
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: ANTHROPIC_MODEL
         value: claude-sonnet-4-5
-      # Parol tiklash email'i uchun SMTP (Brevo relay — secret, Render dashboard'da qo'lda).
-      # Render free web service'lari 25/465/587 portlariga chiquvchi trafikni bloklaydi,
-      # shuning uchun Brevo'ning 2525-porti ishlatiladi (STARTTLS).
+      - key: AI_TEMPERATURE
+        value: "0.7"
+      - key: AI_MAX_TOKENS
+        value: "1000"
+
+      # ---------- Email (Brevo relay — 2525 port, STARTTLS) ----------
+      # Render free web service 25/465/587 portlarini bloklaydi, shuning uchun
+      # 2525 ishlatiladi. Barchasi dashboard'da qo'lda (maxfiy).
       - key: EMAIL_HOST
         sync: false
       - key: EMAIL_PORT
@@ -75,14 +180,58 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
-      # Muddati o'tgan to'lanmagan bron avtomatik bekor qilingan vaqt (daqiqa)
+
+      # ---------- Biznes knob'lari ----------
+      # Muddati o'tgan to'lanmagan bron avtomatik bekor qilinadigan vaqt (daqiqa)
       - key: UNPAID_BOOKING_TTL_MINUTES
-        value: 60
-      # To'lov provayderlari callback/webhook bazaviy URL — mahalliy "localhost"ga tushmaslik
+        value: "60"
+      # Depozit minimal foizi (biznes qoida — foydalanuvchi bu chegaradan
+      # pastga tushsa olmaydi; standart 30)
+      - key: MIN_DEPOSIT_PERCENT
+        value: "10"
+      # STANDART DEPOZIT (avans) FOIZI — spec §6. Hech qayerda kodda
+      # hardcode emas: bron yaratilganda shu qiymat `bookings.depositPercent`
+      # ga YOZILADI va to'lov talabi aynan shundan hisoblanadi.
+      # 100000 so'mlik bron uchun 30% = 30000 avans + 70000 qoldiq.
+      - key: DEPOSIT_PERCENT
+        value: "30"
+      # Vaqtinchalik parol (SUPER_ADMIN va xodimlar uchun), daqiqa
+      - key: TEMP_PASSWORD_MINUTES
+        value: "30"
+      # Login brute-force: 10-chi xato urinishdan keyin hisob bloklanadi
+      - key: LOGIN_MAX_ATTEMPTS
+        value: "10"
+      # 1 soat -> 2 soat -> 5 soat -> 24 soat (bosqichli bloklash)
+      - key: LOGIN_LOCK_MINUTES
+        value: "60,120,300,1440"
+
+      # ---------- WebAuthn / Passkey ----------
+      # rpID — passkey bog'langan FRONTEND domeni (backend emas!)
+      - key: WEBAUTHN_RP_ID
+        value: cyber-zone-delta.vercel.app
+      - key: WEBAUTHN_RP_NAME
+        value: Cyber-ZONE
+      - key: WEBAUTHN_EXPECTED_ORIGINS
+        value: https://cyber-zone-delta.vercel.app, https://frontend-six-bay-25.vercel.app, https://frontend-fullstacks-projects-ffc4c9c9.vercel.app, https://cyber-zone-fullstacks-projects-ffc4c9c9.vercel.app
+
+      # ---------- To'lov provayderlari ----------
+      # SANDBOX production'da QAT'IY o'chirilgan (spec §3). Bu qiymat
+      # ataylab "false" qo'yiladi — kod ham production'da uni red qiladi
+      # (config.payments.devMode -> false, paymentsSandbox() -> false),
+      # ya'ni ikki qatlamli himoya. "force" qiymati ham production'da
+      # ishlamaydi.
+      - key: PAYMENTS_DEV_MODE
+        value: "false"
+      # Mock gateway kaliti. Sandbox o'chgani uchun production'da bu
+      # endpoint 404 qaytaradi; kalit yana ham tasodifiy qilinadi.
+      - key: PAYMENTS_DEV_MOCK_KEY
+        sync: false
+      # Callback/webhook bazaviy URL — "localhost"ga tushmasligi uchun
+      # LIVE Render host. Bu backendning o'z hosti.
       - key: PROVIDER_CALLBACK_URL
         value: https://cyberzone-backend-api.onrender.com
-      # --- To'lov provayderlari (real credential Render dashboard'da qo'lda qo'yiladi) ---
-      # Bo'sh qolsa provider "CONFIGURATION REQUIRED" holatida ko'rinadi — fake success chiqmaydi.
+      # Bo'sh qolsa provider "CONFIGURATION REQUIRED" holatida ko'rinadi —
+      # fake success chiqmaydi. (PAYMENTS_DEV_MODE — lokal sandbox uchun .env'da)
       - key: PAYME_MERCHANT_ID
         sync: false
       - key: PAYME_MERCHANT_KEY
@@ -119,20 +268,3 @@ services:
         value: https://api.paynet.uz/api
       - key: PAYNET_CHECKOUT_URL
         value: https://app.paynet.uz
-      # Depozit minimal foizi (30% standart business logic; min chegara 10%)
-      - key: MIN_DEPOSIT_PERCENT
-        value: "30"
-      # Login brute-force: 10-chi xato urinishdan keyin hisob 24-soatga bloklanadi (§4.2)
-      - key: LOGIN_LOCK_MINUTES
-        value: "1440"
-      - key: LOGIN_MAX_ATTEMPTS
-        value: "10"
-      # WebAuthn: Frontend domeni (passkey bog'langan origin)
-      - key: WEBAUTHN_RP_ID
-        value: cyber-zone-delta.vercel.app
-      - key: WEBAUTHN_EXPECTED_ORIGINS
-        value: https://cyber-zone-delta.vercel.app, https://frontend-six-bay-25.vercel.app, https://frontend-fullstacks-projects-ffc4c9c9.vercel.app, https://cyber-zone-fullstacks-projects-ffc4c9c9.vercel.app
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 5000

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Send,
   Loader2,
@@ -20,13 +20,13 @@ import {
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import Link from 'next/link';
+import { Link } from '@/i18n/navigation';
 import api, { getApiErrorMessage } from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { toastSuccess, toastError } from '@/lib/toast';
 import { confirmDialog } from '@/lib/confirm';
 import { cn } from '@/lib/utils';
-import type { AIConversation, AIMessage, ConversationSummary } from '@/lib/webauthn';
+import type { AIConversation, ConversationSummary } from '@/lib/webauthn';
 
 // ============================================================================
 // CYBER-ZONE AI — yordamchi (redizayn):
@@ -584,7 +584,10 @@ export default function ChatWidget() {
         </div>
       )}
 
-      <div className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom))] md:bottom-5 right-4 md:right-6 z-[70] flex flex-col items-end gap-3">
+      <div
+        className="fixed right-4 md:right-6 z-[70] flex flex-col items-end gap-3"
+        style={{ bottom: 'var(--fab-bottom, 5rem)' }}
+      >
         {/* Desktop: floating panel */}
         {open && !isMobile && (
           <div
@@ -839,7 +842,13 @@ function AiBody(props: BodyProps) {
   } = props;
 
   return (
-    <div ref={bodyRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5 scrollbar-thin min-w-0">
+    <div
+      ref={bodyRef}
+      role="log"
+      aria-live="polite"
+      aria-label="AI yordamchi suhbati"
+      className="flex-1 overflow-y-auto px-3 py-3 space-y-2.5 scrollbar-thin min-w-0"
+    >
       {!user ? (
         <div className="px-4 py-6 text-center">
           <p className="text-sm text-gray-300 mb-3">

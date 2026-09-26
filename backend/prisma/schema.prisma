@@ -43,19 +43,35 @@ enum ComputerStatus {
 }
 
 enum BookingStatus {
-  PENDING          // kutilmoqda (depozit to'lov kutilmoqda)
-  PENDING_PAYMENT  // to'lov jarayonida (to'lov sessiyasi yaratildi, hali tasdiqlanmagan)
-  PARTIALLY_PAID   // depozit to'langan, qoldiq qoldiqda (deposit < 100%)
-  PAID             // to'liq to'langan (depozit = 100%)
-  CONFIRMED        // tasdiqlangan (to'lov muvaffaqiyatli → slot band)
-  ACTIVE           // foydalanuvchi xonada
-  COMPLETED        // tugatilgan
-  CANCELLED        // bekor qilingan
+  PENDING // kutilmoqda (depozit to'lov kutilmoqda)
+  PENDING_PAYMENT // to'lov jarayonida (to'lov sessiyasi yaratildi, hali tasdiqlanmagan)
+  PARTIALLY_PAID // depozit to'langan, qoldiq qoldiqda (deposit < 100%)
+  PAID // to'liq to'langan (depozit = 100%)
+  CONFIRMED // tasdiqlangan (to'lov muvaffaqiyatli → slot band)
+  ACTIVE // foydalanuvchi xonada
+  COMPLETED // tugatilgan
+  CANCELLED // bekor qilingan
 }
 
 enum PaymentType {
-  ADVANCE        // oldindan (depozit)
-  REMAINING      // qoldiq
+  ADVANCE // oldindan (depozit)
+  REMAINING // qoldiq
+}
+
+// Bronni tasdiqlash oqimi: to'lov (yoki chek) tasdiqlangandan keyin admin
+// tasdiqlaydi, SHUNDAGINA foydalanuvchi "Boshlash"ni bosishi mumkin.
+// Moliyaviy holat (BookingStatus) va tasdiqlash holati ORTIBIRIGA mustaqil.
+enum ApprovalStatus {
+  PENDING // to'lov/ cheg oqirilmoqda, admin navbatda
+  APPROVED // admin tasdiqladi — sessiyani boshlash mumkin
+  REJECTED // admin rad etdi — sabab saqlanadi
+}
+
+// O'tkazma cheki (screenshot / PDF) — admin ko'rib tasdiqlaydi
+enum PaymentEvidenceStatus {
+  SUBMITTED // foydalanuvchi yukladi, kutilmoqda
+  APPROVED // admin tasdiqladi (to'lov PAID ga o'tadi)
+  REJECTED // admin rad etdi (sabab bilan)
 }
 
 enum PaymentMethod {
@@ -66,6 +82,8 @@ enum PaymentMethod {
   UZUM
   PAYNET
   CASH
+  TRANSFER // karta/hisob orqali o'tkazma: foydalanuvchi o'z bank ilovasida
+  // to'laydi, chek (screenshot/PDF) yuklaydi, admin tasdiqlaydi
 }
 
 enum PaymentProvider {
@@ -76,22 +94,22 @@ enum PaymentProvider {
 }
 
 enum PaymentStatus {
-  CREATED           // to'lov rekordi yaratildi
-  PENDING           // kutilmoqda (eski/kompat)
+  CREATED // to'lov rekordi yaratildi
+  PENDING // kutilmoqda (eski/kompat)
   REDIRECT_REQUIRED // provider checkout'ga yo'naltirish kerak
-  PROCESSING        // provayder tomonidan tasdiqlanmoqda
-  PAID              // muvaffaqiyatli tasdiqlangan (provider verified)
-  COMPLETED         // yakunlangan (CASH / kompat)
-  FAILED            // muvaffaqiyatsiz
-  CANCELLED         // bekor qilingan
-  EXPIRED           // muddati o'tgan
-  REFUNDED          // qaytarilgan
+  PROCESSING // provayder tomonidan tasdiqlanmoqda
+  PAID // muvaffaqiyatli tasdiqlangan (provider verified)
+  COMPLETED // yakunlangan (CASH / kompat)
+  FAILED // muvaffaqiyatsiz
+  CANCELLED // bekor qilingan
+  EXPIRED // muddati o'tgan
+  REFUNDED // qaytarilgan
 }
 
 enum PromoUsageScope {
-  SINGLE_USE    // promo-kod butun platformada faqat 1 marta ishlatilishi mumkin
-  USER_LIMITED  // kod har bir foydalanuvchiga 1 marta (platformada cheksiz)
-  MULTI_USE     // cheklovsiz (har bir user baribir faqat 1 marta — unique constraint)
+  SINGLE_USE // promo-kod butun platformada faqat 1 marta ishlatilishi mumkin
+  USER_LIMITED // kod har bir foydalanuvchiga 1 marta (platformada cheksiz)
+  MULTI_USE // cheklovsiz (har bir user baribir faqat 1 marta — unique constraint)
 }
 
 enum BarItemCategory {
@@ -117,33 +135,33 @@ enum NewsType {
 // ===================== MODELS =====================
 
 model User {
-  id           String       @id @default(uuid())
-  email        String       @unique
-  passwordHash String?      @map("password_hash")
-  googleId     String?      @unique @map("google_id")
-  fullName     String       @map("full_name")
-  phone        String?
-  avatarUrl    String?      @map("avatar_url")
-  role                 Role                 @default(USER)
-  language             String               @default("uz") // uz | ru | en
-  status               UserStatus           @default(ACTIVE)
-loyaltyBalance Int @default(0) @map("loyalty_balance") // bonus ballar (1 ball = 1 so'm)
+  id             String     @id @default(uuid())
+  email          String     @unique
+  passwordHash   String?    @map("password_hash")
+  googleId       String?    @unique @map("google_id")
+  fullName       String     @map("full_name")
+  phone          String?
+  avatarUrl      String?    @map("avatar_url")
+  role           Role       @default(USER)
+  language       String     @default("uz") // uz | ru | en
+  status         UserStatus @default(ACTIVE)
+  loyaltyBalance Int        @default(0) @map("loyalty_balance") // bonus ballar (1 ball = 1 so'm)
 
-  resetToken           String?   @unique @map("reset_token")
-  resetTokenExpiresAt  DateTime? @map("reset_token_expires_at")
+  resetToken            String?   @unique @map("reset_token")
+  resetTokenExpiresAt   DateTime? @map("reset_token_expires_at")
   // VaQTINCHALIK PAROL (forgot-password): hash saqlanadi, plain text hech qachon DB'da yo'q
-  tempPasswordHash      String?  @map("temp_password_hash")
+  tempPasswordHash      String?   @map("temp_password_hash")
   tempPasswordExpiresAt DateTime? @map("temp_password_expires_at")
   // Login bilan: parolni majburiy yangilash (vaqtinchalik parol bilan kirilganda)
-  mustChangePassword Boolean @default(false) @map("must_change_password")
+  mustChangePassword    Boolean   @default(false) @map("must_change_password")
 
   // WebAuthn/Passkey: platform Face ID / fingerprint / security key
   requirePasskey Boolean @default(false) @map("require_passkey") // server-enforced "verify with passkey" policy
 
   // Brute-force himoyasi: ketma-ket xato urinishlar va vaqtincha bloklash
-  failedLoginAttempts  Int      @default(0) @map("failed_login_attempts")
-  loginLockStage       Int      @default(0) @map("login_lock_stage") // blok bosqichi (spec §4.2: doimiy 24h)
-  loginLockedUntil     DateTime? @map("login_locked_until")
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  loginLockStage      Int       @default(0) @map("login_lock_stage") // blok bosqichi (spec §4.2: doimiy 24h)
+  loginLockedUntil    DateTime? @map("login_locked_until")
 
   // Server-side session invalidation: har bir JWT shu versiyani olib yuradi.
   // Logout / parol o'zgartirishda oshiriladi — eski tokenlar darhol kuchsizlanadi.
@@ -164,23 +182,28 @@ loyaltyBalance Int @default(0) @map("loyalty_balance") // bonus ballar (1 ball =
 
   securityEvents SecurityEvent[]
 
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
+  uploadedEvidence  PaymentEvidence[] @relation("EvidenceUploader")
+  reviewedEvidence  PaymentEvidence[] @relation("EvidenceReviewer")
+  bookingApprovals  Booking[]         @relation("BookingApprover")
+  bookingRejections Booking[]         @relation("BookingRejecter")
 
-  computerRoom ComputerRoom? // admin egalik qiladi
-  bookings     Booking[]
-  payments     Payment[]
-  news         News[]
-  reviews      Review[]
-  notifications Notification[]
-  promoCodes   PromoCode[]
-  barOrders    BarOrder[]
-  chatMessages ChatMessage[]
-  passkeys     Passkey[]
-  conversations AIConversation[]
-  promoRedemptions PromoRedemption[]
-  supportThread SupportMessage[] @relation("SupportThread")
-  supportSent   SupportMessage[] @relation("SupportSender")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  computerRoom        ComputerRoom? // admin egalik qiladi
+  bookings            Booking[]
+  payments            Payment[]
+  news                News[]
+  reviews             Review[]
+  notifications       Notification[]
+  promoCodes          PromoCode[]
+  barOrders           BarOrder[]
+  chatMessages        ChatMessage[]
+  passkeys            Passkey[]
+  conversations       AIConversation[]
+  promoRedemptions    PromoRedemption[]
+  supportThread       SupportMessage[]     @relation("SupportThread")
+  supportSent         SupportMessage[]     @relation("SupportSender")
   loyaltyTransactions LoyaltyTransaction[]
 
   @@map("users")
@@ -210,63 +233,63 @@ model SecurityEvent {
 }
 
 model ComputerRoom {
-  id           String       @id @default(uuid())
-  ownerId      String       @unique @map("owner_id")
+  id           String     @id @default(uuid())
+  ownerId      String     @unique @map("owner_id")
   name         String
   description  String?
   address      String
-  district     String?      // Toshkent tumani, masalan: "Mirzo Ulug'bek"
-  city         String       @default("Toshkent")
+  district     String? // Toshkent tumani, masalan: "Mirzo Ulug'bek"
+  city         String     @default("Toshkent")
   latitude     Float?
   longitude    Float?
   phone        String?
-  workingHours Json?        @map("working_hours") // { open: "09:00", close: "23:00" }
-  timezone     String       @default("Asia/Tashkent")
-  images       Json?        // massiv [url1, url2]
-  status       RoomStatus   @default(PENDING)
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+  workingHours Json?      @map("working_hours") // { open: "09:00", close: "23:00" }
+  timezone     String     @default("Asia/Tashkent")
+  images       Json? // massiv [url1, url2]
+  status       RoomStatus @default(PENDING)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
 
-  owner        User         @relation(fields: [ownerId], references: [id])
-  zones        Zone[]
-  bookings     Booking[]
-  news         News[]
-  reviews      Review[]
-  promoCodes   PromoCode[]
-  barItems     BarItem[]
-  barOrders    BarOrder[]
-  chatMessages ChatMessage[]
+  owner           User             @relation(fields: [ownerId], references: [id])
+  zones           Zone[]
+  bookings        Booking[]
+  news            News[]
+  reviews         Review[]
+  promoCodes      PromoCode[]
+  barItems        BarItem[]
+  barOrders       BarOrder[]
+  chatMessages    ChatMessage[]
   supportMessages SupportMessage[]
 
   @@map("computer_rooms")
 }
 
 model Zone {
-  id           String    @id @default(uuid())
-  roomId       String    @map("room_id")
+  id           String   @id @default(uuid())
+  roomId       String   @map("room_id")
   type         ZoneType
   name         String
   description  String?
-  capacity     Int        @default(0)
-  pricePerHour Decimal    @map("price_per_hour") @db.Decimal(10, 2)
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  capacity     Int      @default(0)
+  pricePerHour Decimal  @map("price_per_hour") @db.Decimal(10, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
-  room        ComputerRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  computers   Computer[]
-  bookings    Booking[]
+  room      ComputerRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  computers Computer[]
+  bookings  Booking[]
 
   @@map("zones")
 }
 
 model Computer {
-  id        String          @id @default(uuid())
-  zoneId    String          @map("zone_id")
+  id        String         @id @default(uuid())
+  zoneId    String         @map("zone_id")
   name      String
-  specs     Json            // { cpu, gpu, ram, monitor, storage, peripherals }
-  status    ComputerStatus  @default(AVAILABLE)
-  createdAt DateTime        @default(now()) @map("created_at")
-  updatedAt DateTime        @updatedAt @map("updated_at")
+  specs     Json // { cpu, gpu, ram, monitor, storage, peripherals }
+  status    ComputerStatus @default(AVAILABLE)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
 
   zone     Zone      @relation(fields: [zoneId], references: [id], onDelete: Cascade)
   bookings Booking[]
@@ -275,86 +298,108 @@ model Computer {
 }
 
 model Booking {
-  id               String        @id @default(uuid())
-  userId           String        @map("user_id")
-  roomId           String        @map("room_id")
-  zoneId           String        @map("zone_id")
-  computerId       String?       @map("computer_id")
-  promoCodeId      String?       @map("promo_code_id")
-  date             DateTime      @db.Date
-  startTime        String        @map("start_time") // "14:00"
-  endTime          String        @map("end_time")   // "17:00"
-  durationHours    Decimal       @map("duration_hours") @db.Decimal(4, 1)
-  totalPrice       Decimal       @map("total_price") @db.Decimal(10, 2)
-  discountAmount   Decimal       @default(0) @map("discount_amount") @db.Decimal(10, 2)
-  finalPrice       Decimal       @map("final_price") @db.Decimal(10, 2)
-  pointsUsed       Int           @default(0) @map("points_used") // bonus ballar bilan to'lagan summa (so'm)
-  advanceAmount    Decimal       @map("advance_amount") @db.Decimal(10, 2) // depozit summa
-  remainingAmount  Decimal       @map("remaining_amount") @db.Decimal(10, 2) // qoldiq
-  depositPercent   Int           @default(30) @map("deposit_percent") // foydalanuvchi tanlagan depozit foizi
-  status           BookingStatus @default(PENDING)
-  notes            String?
-  idempotencyKey   String?       @map("idempotency_key") // takroriy so'rovlardan himoya (user bo'yicha unique)
+  id              String        @id @default(uuid())
+  userId          String        @map("user_id")
+  roomId          String        @map("room_id")
+  zoneId          String        @map("zone_id")
+  computerId      String?       @map("computer_id")
+  promoCodeId     String?       @map("promo_code_id")
+  date            DateTime      @db.Date
+  startTime       String        @map("start_time") // "14:00"
+  endTime         String        @map("end_time") // "17:00"
+  durationHours   Decimal       @map("duration_hours") @db.Decimal(4, 1)
+  totalPrice      Decimal       @map("total_price") @db.Decimal(10, 2)
+  discountAmount  Decimal       @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  finalPrice      Decimal       @map("final_price") @db.Decimal(10, 2)
+  pointsUsed      Int           @default(0) @map("points_used") // bonus ballar bilan to'lagan summa (so'm)
+  advanceAmount   Decimal       @map("advance_amount") @db.Decimal(10, 2) // depozit summa
+  remainingAmount Decimal       @map("remaining_amount") @db.Decimal(10, 2) // qoldiq
+  depositPercent  Int           @default(30) @map("deposit_percent") // foydalanuvchi tanlagan depozit foizi
+  status          BookingStatus @default(PENDING)
+  notes           String?
+  idempotencyKey  String?       @map("idempotency_key") // takroriy so'rovlardan himoya (user bo'yicha unique)
 
   // SESSIYA (check-in / check-out) — §2.5 real foydalanish hisobi.
   // Bron ACTIVE bo'lganda sessionStartedAt server tomonidan yoziladi; check-out'da
   // haqiqiy o'yin vaqti va narx hisoblanadi (min 1 soat billing, ortig'i/refund ballga).
-  sessionStartedAt     DateTime? @map("session_started_at")
-  sessionEndedAt       DateTime? @map("session_ended_at")
-  actualDurationMinutes Int?     @map("actual_duration_minutes") // haqiqiy o'yin daqiqalari
-  actualPrice          Decimal?  @map("actual_price") @db.Decimal(10, 2) // haqiqiy sessiya narxi (so'm)
-  billingAdjustment    Decimal?  @map("billing_adjustment") @db.Decimal(10, 2) // 0 yoki musbat: qo'shimcha to'lov; manfiy: qaytarilgan
-  minBillingMinutes    Int       @default(60) @map("min_billing_minutes") // minimal hisoblanadigan vaqt (1 soat)
+  sessionStartedAt      DateTime? @map("session_started_at")
+  sessionEndedAt        DateTime? @map("session_ended_at")
+  actualDurationMinutes Int?      @map("actual_duration_minutes") // haqiqiy o'yin daqiqalari
+  actualPrice           Decimal?  @map("actual_price") @db.Decimal(10, 2) // haqiqiy sessiya narxi (so'm)
+  billingAdjustment     Decimal?  @map("billing_adjustment") @db.Decimal(10, 2) // 0 yoki musbat: qo'shimcha to'lov; manfiy: qaytarilgan
+  minBillingMinutes     Int       @default(60) @map("min_billing_minutes") // minimal hisoblanadigan vaqt (1 soat)
+  // Taymer tugash vaqti — worker shu qiymat bo'yicha sessiyani O'Z-O'ZICHIGA
+  // yopadi va kompyuterni bo'shatadi (server o'chganda ham startup'da tiklanadi).
+  sessionEndsAt         DateTime? @map("session_ends_at")
+  // Sessiya avtomatik yopildimi (foydalanuvchi "check-out" bosmadimi)
+  autoClosed            Boolean   @default(false) @map("auto_closed")
+  // Bronni band qilish muddati (to'lov kutilayotgan paytdan boshlab)
+  holdExpiresAt         DateTime? @map("hold_expires_at")
 
-  createdAt        DateTime      @default(now()) @map("created_at")
-  updatedAt        DateTime      @updatedAt @map("updated_at")
+  // ============ ADMIN TASDIQLASH (moliyaviy holatdan MUSTAQIL o'q) ============
+  // To'lov tasdiqlanganda approvalStatus = APPROVED bo'ladi; SHUNDAGINA
+  // foydalanuvchi "Boshlash"ni bosishi mumkin. Kim/nima/timemas saqlanadi.
+  approvalStatus  ApprovalStatus @default(PENDING) @map("approval_status")
+  approvedAt      DateTime?      @map("approved_at")
+  approvedById    String?        @map("approved_by_id")
+  rejectedAt      DateTime?      @map("rejected_at")
+  rejectedById    String?        @map("rejected_by_id")
+  rejectionReason String?        @map("rejection_reason")
 
-  user     User          @relation(fields: [userId], references: [id])
-  room     ComputerRoom  @relation(fields: [roomId], references: [id])
-  zone     Zone          @relation(fields: [zoneId], references: [id])
-  computer Computer?     @relation(fields: [computerId], references: [id])
-  promoCode PromoCode?   @relation(fields: [promoCodeId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user       User              @relation(fields: [userId], references: [id])
+  room       ComputerRoom      @relation(fields: [roomId], references: [id])
+  zone       Zone              @relation(fields: [zoneId], references: [id])
+  computer   Computer?         @relation(fields: [computerId], references: [id])
+  promoCode  PromoCode?        @relation(fields: [promoCodeId], references: [id])
+  approvedBy User?             @relation("BookingApprover", fields: [approvedById], references: [id])
+  rejectedBy User?             @relation("BookingRejecter", fields: [rejectedById], references: [id])
   redemption PromoRedemption?
-  payments Payment[]
-  barOrder BarOrder?
+  payments   Payment[]
+  evidences  PaymentEvidence[]
+  barOrder   BarOrder?
 
   @@unique([userId, idempotencyKey])
   @@index([roomId, date], map: "bookings_room_id_date_idx")
   @@index([computerId, date], map: "bookings_computer_id_date_idx")
   @@index([userId, createdAt], map: "bookings_user_id_created_at_idx")
   @@index([status, createdAt], map: "bookings_status_created_at_idx")
+  @@index([approvalStatus, date], map: "bookings_approval_status_date_idx")
+  @@index([status, sessionEndsAt], map: "bookings_status_session_ends_at_idx")
   @@map("bookings")
 }
 
 model PromoCode {
-  id                String    @id @default(uuid())
-  roomId            String?   @map("room_id")
-  code              String    @unique
-  discountType      String    @map("discount_type") // PERCENTAGE | FIXED
-  discountValue     Decimal   @map("discount_value") @db.Decimal(10, 2)
-  minBookingAmount  Decimal?  @map("min_booking_amount") @db.Decimal(10, 2)
+  id                String          @id @default(uuid())
+  roomId            String?         @map("room_id")
+  code              String          @unique
+  discountType      String          @map("discount_type") // PERCENTAGE | FIXED
+  discountValue     Decimal         @map("discount_value") @db.Decimal(10, 2)
+  minBookingAmount  Decimal?        @map("min_booking_amount") @db.Decimal(10, 2)
   usageScope        PromoUsageScope @default(SINGLE_USE) @map("usage_scope")
-  maxUses           Int?      @map("max_uses")
-  usedCount         Int       @default(0) @map("used_count")
+  maxUses           Int?            @map("max_uses")
+  usedCount         Int             @default(0) @map("used_count")
   // Har bir foydalanuvchi necha marta ishlatishi mumkin (1|2|N). PromoRedemption
   // qatorlari hisobiga tekshiriladi (identity: userId + bir xil telefon twin'lari).
-  usageLimitPerUser Int       @default(1) @map("usage_limit_per_user")
+  usageLimitPerUser Int             @default(1) @map("usage_limit_per_user")
   // SHAXSIY promo-kod: aniq foydalanuvchiga beriladi (identifikatsiya: userId /
   // tasdiqlangan telefon / email — IP EMAS). Faqat mos shaxs ishlata oladi.
-  isPersonal        Boolean   @default(false) @map("is_personal")
-  recipientUserId   String?   @map("recipient_user_id")
-  recipientPhone    String?   @map("recipient_phone")
-  recipientEmail    String?   @map("recipient_email")
-  startsAt          DateTime  @map("starts_at")
-  expiresAt         DateTime  @map("expires_at")
-  isActive          Boolean   @default(true) @map("is_active")
-  createdBy         String    @map("created_by")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
+  isPersonal        Boolean         @default(false) @map("is_personal")
+  recipientUserId   String?         @map("recipient_user_id")
+  recipientPhone    String?         @map("recipient_phone")
+  recipientEmail    String?         @map("recipient_email")
+  startsAt          DateTime        @map("starts_at")
+  expiresAt         DateTime        @map("expires_at")
+  isActive          Boolean         @default(true) @map("is_active")
+  createdBy         String          @map("created_by")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
 
-  room      ComputerRoom? @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  creator   User          @relation(fields: [createdBy], references: [id])
-  bookings  Booking[]
+  room        ComputerRoom?     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  creator     User              @relation(fields: [createdBy], references: [id])
+  bookings    Booking[]
   redemptions PromoRedemption[]
 
   @@map("promo_codes")
@@ -385,47 +430,84 @@ model PromoRedemption {
 }
 
 model Payment {
-  id                   String            @id @default(uuid())
-  bookingId            String            @map("booking_id")
-  userId               String            @map("user_id")
-  amount               Decimal           @db.Decimal(10, 2)
-  type                 PaymentType
-  method               PaymentMethod?
-  provider             PaymentProvider?  @map("provider")
-  status               PaymentStatus     @map("status")
-  currency             String            @default("UZS")
-  depositPercent       Int               @default(30) @map("deposit_percent")
+  id                    String           @id @default(uuid())
+  bookingId             String           @map("booking_id")
+  userId                String           @map("user_id")
+  amount                Decimal          @db.Decimal(10, 2)
+  type                  PaymentType
+  method                PaymentMethod?
+  provider              PaymentProvider? @map("provider")
+  status                PaymentStatus    @map("status")
+  currency              String           @default("UZS")
+  depositPercent        Int              @default(30) @map("deposit_percent")
   providerTransactionId String?          @unique @map("provider_transaction_id") // idempotency (provider transaction ID)
-  providerPaymentId    String?           @map("provider_payment_id")
-  transactionId        String?           @map("transaction_id") // eski/kompat
-  idempotencyKey       String?           @unique @map("idempotency_key") // client so'rovi kaliti — takroriy yaratishni DB darajasida to'xtatadi
-  metadata             Json?             @map("metadata")
-  failureReason        String?           @map("failure_reason")
-  expiresAt            DateTime?         @map("expires_at")
-  paidAt               DateTime?         @map("paid_at")
-  createdAt            DateTime          @default(now()) @map("created_at")
-  updatedAt            DateTime          @default(now()) @updatedAt @map("updated_at")
+  providerPaymentId     String?          @map("provider_payment_id")
+  transactionId         String?          @map("transaction_id") // eski/kompat
+  idempotencyKey        String?          @unique @map("idempotency_key") // client so'rovi kaliti — takroriy yaratishni DB darajasida to'xtatadi
+  metadata              Json?            @map("metadata")
+  failureReason         String?          @map("failure_reason")
+  expiresAt             DateTime?        @map("expires_at")
+  paidAt                DateTime?        @map("paid_at")
+  // QARZ (debt): sessiya tugagandan keyin qo'shimcha to'lov yuzaga keldi
+  // (soatlik hisob bo'yicha). Foydalanuvchi xohlagan paytda to'lashi mumkin —
+  // admin va mijoz uchun ko'rinadi (GET /api/payments/debts).
+  isDebt                Boolean          @default(false) @map("is_debt")
+  dueAt                 DateTime?        @map("due_at")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  booking Booking       @relation(fields: [bookingId], references: [id])
-  user    User          @relation(fields: [userId], references: [id])
-  audits  PaymentAuditLog[]
+  booking   Booking           @relation(fields: [bookingId], references: [id])
+  user      User              @relation(fields: [userId], references: [id])
+  audits    PaymentAuditLog[]
+  evidences PaymentEvidence[]
 
   @@index([bookingId, status], map: "payments_booking_id_status_idx")
   @@index([userId, createdAt], map: "payments_user_id_created_at_idx")
   @@index([status, expiresAt], map: "payments_status_expires_at_idx")
+  @@index([isDebt, status], map: "payments_is_debt_status_idx")
   @@map("payments")
+}
+
+// ============ O'TKAZMA CHEKI (screenshot / PDF) ============
+// Karta/hisob orqali to'lovda foydalanuvchi o'z bank ilovasidagi o'tkazma
+// chekini (rasm yoki PDF) yuklaydi, admin uni ko'rib tasdiqlaydi. Hech qanday
+// KARTA RAQAMI saytga yuborilmaydi — faqat chek fayli saqlanadi.
+model PaymentEvidence {
+  id           String                @id @default(uuid())
+  paymentId    String                @map("payment_id")
+  bookingId    String                @map("booking_id")
+  uploadedById String                @map("uploaded_by_id")
+  fileUrl      String                @map("file_url")
+  fileName     String                @map("file_name")
+  mimeType     String                @map("mime_type")
+  sizeBytes    Int                   @map("size_bytes")
+  status       PaymentEvidenceStatus @default(SUBMITTED)
+  reviewNote   String?               @map("review_note")
+  reviewedById String?               @map("reviewed_by_id")
+  reviewedAt   DateTime?             @map("reviewed_at")
+  createdAt    DateTime              @default(now()) @map("created_at")
+
+  payment    Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  uploadedBy User    @relation("EvidenceUploader", fields: [uploadedById], references: [id])
+  reviewedBy User?   @relation("EvidenceReviewer", fields: [reviewedById], references: [id])
+
+  @@index([paymentId, createdAt])
+  @@index([status, createdAt], map: "payment_evidence_status_created_at_idx")
+  @@index([bookingId])
+  @@map("payment_evidence")
 }
 
 // ============ TO'LOV AUDIT LOGI ============
 // Har bir to'lov voqeasi xavfsizlik va qarorlar uchun qatori.
 model PaymentAuditLog {
-  id         String   @id @default(uuid())
-  paymentId  String   @map("payment_id")
-  action     String   @map("action") // payment_created | redirect_generated | webhook_received | payment_verified | payment_failed | booking_confirmed | refund_requested | refund_completed | admin_marked_paid
-  actorId    String?  @map("actor_id")
-  actorRole  String?  @map("actor_role")
-  metadata   Json?    @map("metadata")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  paymentId String   @map("payment_id")
+  action    String   @map("action") // payment_created | redirect_generated | webhook_received | payment_verified | payment_failed | booking_confirmed | refund_requested | refund_completed | admin_marked_paid
+  actorId   String?  @map("actor_id")
+  actorRole String?  @map("actor_role")
+  metadata  Json?    @map("metadata")
+  createdAt DateTime @default(now()) @map("created_at")
 
   payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
 
@@ -436,16 +518,16 @@ model PaymentAuditLog {
 
 // ============ BAR (Gaming kafe) ============
 model BarItem {
-  id          String            @id @default(uuid())
-  roomId      String            @map("room_id")
+  id          String          @id @default(uuid())
+  roomId      String          @map("room_id")
   name        String
   description String?
-  price       Decimal           @db.Decimal(10, 2)
-  category    BarItemCategory   @default(DRINK)
-  imageUrl    String?           @map("image_url")
-  isAvailable Boolean           @default(true) @map("is_available")
-  createdAt   DateTime          @default(now()) @map("created_at")
-  updatedAt   DateTime          @updatedAt @map("updated_at")
+  price       Decimal         @db.Decimal(10, 2)
+  category    BarItemCategory @default(DRINK)
+  imageUrl    String?         @map("image_url")
+  isAvailable Boolean         @default(true) @map("is_available")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
 
   room ComputerRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
@@ -453,16 +535,16 @@ model BarItem {
 }
 
 model BarOrder {
-  id          String          @id @default(uuid())
-  roomId      String          @map("room_id")
-  bookingId   String?         @unique @map("booking_id")
-  userId      String          @map("user_id")
-  seatNumber  String?         @map("seat_number") // kompyuter yoki stol raqami
-  items       Json            // [{ itemId, name, price, qty }]
-  totalPrice  Decimal         @map("total_price") @db.Decimal(10, 2)
-  status      BarOrderStatus  @default(PENDING)
-  createdAt   DateTime        @default(now()) @map("created_at")
-  updatedAt   DateTime        @updatedAt @map("updated_at")
+  id         String         @id @default(uuid())
+  roomId     String         @map("room_id")
+  bookingId  String?        @unique @map("booking_id")
+  userId     String         @map("user_id")
+  seatNumber String?        @map("seat_number") // kompyuter yoki stol raqami
+  items      Json // [{ itemId, name, price, qty }]
+  totalPrice Decimal        @map("total_price") @db.Decimal(10, 2)
+  status     BarOrderStatus @default(PENDING)
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
 
   room    ComputerRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
   booking Booking?     @relation(fields: [bookingId], references: [id])
@@ -473,13 +555,13 @@ model BarOrder {
 
 // ============ JONLI SUHBAT (Chat) ============
 model ChatMessage {
-  id         String   @id @default(uuid())
-  roomId     String   @map("room_id")
-  userId     String   @map("user_id") // yuboruvchi (USER yoki ADMIN/SUPER_ADMIN)
-  role       String   @default("USER") // USER | ADMIN | SUPER_ADMIN
-  message    String
-  isRead     Boolean  @default(false) @map("is_read")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  roomId    String   @map("room_id")
+  userId    String   @map("user_id") // yuboruvchi (USER yoki ADMIN/SUPER_ADMIN)
+  role      String   @default("USER") // USER | ADMIN | SUPER_ADMIN
+  message   String
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
 
   room ComputerRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
   user User         @relation(fields: [userId], references: [id])
@@ -492,18 +574,18 @@ model ChatMessage {
 //   - 'SUPER_ADMIN' -> foydalanuvchi/admin super_admin'ga yozadi (thread userId bo'yicha)
 //   - 'ADMIN'       -> foydalanuvchi xona adminiga yozadi (thread userId + roomId bo'yicha)
 model SupportMessage {
-  id            String   @id @default(cuid())
-  userId        String   @map("user_id") // murojaat qilgan foydalanuvchi (thread egasi)
-  senderId      String?  @map("sender_id") // yuboruvchi (admin/super_admin javobi yoki nol)
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id") // murojaat qilgan foydalanuvchi (thread egasi)
+  senderId      String?   @map("sender_id") // yuboruvchi (admin/super_admin javobi yoki nol)
   message       String
-  recipientRole String   @default("SUPER_ADMIN") @map("recipient_role") // ADMIN | SUPER_ADMIN
-  roomId        String?  @map("room_id") // ADMIN kanali uchun xona (thread = userId + roomId)
+  recipientRole String    @default("SUPER_ADMIN") @map("recipient_role") // ADMIN | SUPER_ADMIN
+  roomId        String?   @map("room_id") // ADMIN kanali uchun xona (thread = userId + roomId)
   isRead        Boolean   @default(false) @map("is_read")
   createdAt     DateTime  @default(now()) @map("created_at")
   editedAt      DateTime? @map("edited_at") // xabar tahrirlangan sanasi (agar tahrirlangan bo'lsa)
 
-  user   User  @relation("SupportThread", fields: [userId], references: [id], onDelete: Cascade)
-  sender User? @relation("SupportSender", fields: [senderId], references: [id])
+  user   User          @relation("SupportThread", fields: [userId], references: [id], onDelete: Cascade)
+  sender User?         @relation("SupportSender", fields: [senderId], references: [id])
   room   ComputerRoom? @relation(fields: [roomId], references: [id], onDelete: SetNull)
 
   @@index([userId])
@@ -514,20 +596,20 @@ model SupportMessage {
 }
 
 model News {
-  id          String    @id @default(uuid())
-  roomId      String?   @map("room_id")
-  authorId    String    @map("author_id")
+  id          String   @id @default(uuid())
+  roomId      String?  @map("room_id")
+  authorId    String   @map("author_id")
   title       String
   content     String
-  imageUrl    String?   @map("image_url")
-  type        NewsType  @default(NEWS)
-  isActive    Boolean   @default(true) @map("is_active")
-  publishedAt DateTime  @default(now()) @map("published_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  imageUrl    String?  @map("image_url")
+  type        NewsType @default(NEWS)
+  isActive    Boolean  @default(true) @map("is_active")
+  publishedAt DateTime @default(now()) @map("published_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   room   ComputerRoom? @relation(fields: [roomId], references: [id], onDelete: Cascade)
-  author User         @relation(fields: [authorId], references: [id])
+  author User          @relation(fields: [authorId], references: [id])
 
   @@map("news")
 }
@@ -562,14 +644,14 @@ model Notification {
 
 // ============ LOYALTY (Bonus ballar) ============
 model LoyaltyTransaction {
-  id           String    @id @default(uuid())
-  userId       String    @map("user_id")
-  type         String    // EARN | REDEEM | REFUND
-  amount       Int       // + ball qo'shildi / - ball sarflandi
-  balanceAfter Int       @map("balance_after")
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  type         String // EARN | REDEEM | REFUND
+  amount       Int // + ball qo'shildi / - ball sarflandi
+  balanceAfter Int      @map("balance_after")
   description  String
-  bookingId    String?   @map("booking_id")
-  createdAt    DateTime  @default(now()) @map("created_at")
+  bookingId    String?  @map("booking_id")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   user User @relation(fields: [userId], references: [id])
 
@@ -582,19 +664,19 @@ model LoyaltyTransaction {
 // Server-da credential metadatasi saqlanadi. Privpat key HECH QACHON serverga
 // yuborilmaydi — WebAuthn attestation/assertion signature orqali ishlaydi.
 model Passkey {
-  id           String   @id @default(uuid())
-  userId       String   @map("user_id")
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
   // WebAuthn credential ID (base64url) — unique
-  credentialId String   @unique @map("credential_id")
+  credentialId String    @unique @map("credential_id")
   // Credential public key (Buffer) — private key serverda YO'Q
-  publicKey    Bytes    @map("public_key")
-  counter      BigInt   @default(0) @map("counter") // replay himoyasi
+  publicKey    Bytes     @map("public_key")
+  counter      BigInt    @default(0) @map("counter") // replay himoyasi
   // Authenticator transports (usb, internal, nfc, ble) — JSON nusxasi
   transports   Json?
-  deviceName   String   @default("") @map("device_name") // user tomonidan nomlanadi
+  deviceName   String    @default("") @map("device_name") // user tomonidan nomlanadi
   // Qaysi AAGUID (authenticator modeli) — platforma, might be empty
-  aaguid       String?  @default("") @map("aaguid")
-  createdAt    DateTime @default(now()) @map("created_at")
+  aaguid       String?   @default("") @map("aaguid")
+  createdAt    DateTime  @default(now()) @map("created_at")
   lastUsedAt   DateTime? @map("last_used_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -605,13 +687,13 @@ model Passkey {
 
 // ============ AI SUHBATLAR (conversations / messages) ============
 model AIConversation {
-  id        String      @id @default(uuid())
-  userId    String      @map("user_id")
-  title     String      @default("Yangi suhbat") @map("title")
-  createdAt DateTime    @default(now()) @map("created_at")
-  updatedAt DateTime    @updatedAt @map("updated_at")
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String   @default("Yangi suhbat") @map("title")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages AIMessage[]
 
   @@index([userId, updatedAt])
@@ -619,12 +701,12 @@ model AIConversation {
 }
 
 model AIMessage {
-  id             String        @id @default(uuid())
-  conversationId String        @map("conversation_id")
-  role           String        // user | assistant | system
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String // user | assistant | system
   content        String
-  createdAt      DateTime      @default(now()) @map("created_at")
-  updatedAt      DateTime      @updatedAt @map("updated_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   conversation AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

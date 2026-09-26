@@ -66,3 +66,34 @@ export const uploadRoomImage = multer({
     else cb(new Error('Faqat rasm yuklash mumkin (JPG/PNG/WEBP/AVIF/GIF)'));
   },
 });
+
+// ============ TO'LOV CHEGI (o'tkazma screenshot / PDF bank cheki) ============
+// Bu fayllar ADMIN tomonidan ko'riladi va tasdiqlash qarorida asos bo'ladi.
+// MIME tipi "allow list" orqali tekshiriladi — fayl nomi KENGAYMA bo'yicha
+// emas, MIME bo'yicha yaratiladi (path traversal / XSS himoyasi).
+const evidenceRoot = path.join(process.cwd(), 'uploads', 'evidence');
+fs.mkdirSync(evidenceRoot, { recursive: true });
+
+const EVIDENCE_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'application/pdf': '.pdf',
+};
+
+const evidenceStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, evidenceRoot),
+  filename: (_req, file, cb) => {
+    const ext = EVIDENCE_EXT[file.mimetype] || '.bin';
+    cb(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`);
+  },
+});
+
+export const uploadPaymentEvidence = multer({
+  storage: evidenceStorage,
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 }, // 8MB, bitta fayl
+  fileFilter: (_req, file, cb) => {
+    if (EVIDENCE_EXT[file.mimetype]) cb(null, true);
+    else cb(new Error('Faqat chek screenshot (JPG/PNG/WEBP) yoki PDF yuklash mumkin'));
+  },
+});

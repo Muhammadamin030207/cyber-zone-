@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Send, Loader2, ShieldCheck, Phone, Mail, Trash2, UserRound, Building2, MessageSquareText, ChevronDown, Pencil,
+  Send, Loader2, ShieldCheck, Phone, Mail, Trash2, UserRound, Building2, Pencil,
 } from 'lucide-react';
 import api, { getApiErrorMessage } from '@/lib/api';
 import { confirmDialog } from '@/lib/confirm';
@@ -83,24 +83,12 @@ export default function SupportChat({
 
   const isListMode = mode === 'superadmin' || (mode === 'admin' && channel === 'admin');
   const isSuperAdmin = me?.role === 'SUPER_ADMIN';
+  const hiddenForSuperAdmin = isSuperAdmin && mode === 'user';
   const visitorName = activeRoom?.owner?.fullName || (isSuperAdmin ? 'Super Admin' : 'Xona admini');
 
   const visibleThreads = threads.filter((t) =>
     scope === 'all' ? true : scope === 'users' ? t.user.role === 'USER' : t.user.role === 'ADMIN'
   );
-
-  // Xavfsizlik: super_admin o'ziga o'zi "Super Admin'ga yozish" ko'rinmaydi
-  if (isSuperAdmin && mode === 'user') {
-    return (
-      <div className="neo-card rounded-2xl p-8 text-center">
-        <ShieldCheck size={38} className="mx-auto text-yellow-400 mb-3" />
-        <p className="font-bold mb-1">Super Admin</p>
-        <p className="text-sm text-gray-400">
-          Murojaatlar boshqaruv panelidagi chat tablarida boshqariladi.
-        </p>
-      </div>
-    );
-  }
 
   const merge = (list: SupportMsg[], incoming: SupportMsg | SupportMsg[]) =>
     Array.from(new Map([...list, ...(Array.isArray(incoming) ? incoming : [incoming])].map((m) => [m.id, m])).values())
@@ -120,19 +108,6 @@ export default function SupportChat({
       setSupportRooms(data.data || []);
     } catch { /* skip */ }
   }, []);
-
-  const readSingle = useCallback(async () => {
-    if (mode === 'user' && channel === 'admin') {
-      if (!activeRoom) return;
-      const p = new URLSearchParams({ recipient: 'ADMIN', roomId: activeRoom.id });
-      const { data } = await api.get(`/api/support/messages?${p}`);
-      setMessages(data.data.messages || []);
-    } else {
-      const { data } = await api.get('/api/support/messages');
-      setMessages(data.data.messages || []);
-      setActive({ userId: data.data.userId || me?.id || '' });
-    }
-  }, [mode, channel, activeRoom, me]);
 
   const loadThreadMessages = useCallback(async (uId: string, rId?: string | null) => {
     const p = new URLSearchParams({ recipient: chUpper });
@@ -165,20 +140,32 @@ export default function SupportChat({
 
   // Dastlabki yuklash
   useEffect(() => {
-    if (!me) return;
-    if (isListMode) {
-      loadThreads().finally(() => setLoading(false));
-    } else if (mode === 'user' && channel === 'admin') {
-      loadSupportRooms().finally(() => setLoading(false));
-    } else {
-      readSingle().finally(() => setLoading(false));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me, isListMode, mode, channel]);
+    if (!me || hiddenForSuperAdmin) return;
+    let alive = true;
+    const run = async () => {
+      try {
+        if (isListMode) {
+          await loadThreads();
+        } else if (mode === 'user' && channel === 'admin') {
+          await loadSupportRooms();
+        } else {
+          const { data } = await api.get('/api/support/messages');
+          if (!alive) return;
+          setMessages(data.data.messages || []);
+          setActive({ userId: data.data.userId || me.id || '' });
+        }
+      } catch { /* skip */ }
+      finally {
+        if (alive) setLoading(false);
+      }
+    };
+    run();
+    return () => { alive = false; };
+  }, [me, hiddenForSuperAdmin, isListMode, mode, channel, loadThreads, loadSupportRooms]);
 
   // Jonli yangilanish (socket)
   useEffect(() => {
-    if (!me) return;
+    if (!me || hiddenForSuperAdmin) return;
     const socket = getSocket();
     socket.emit('register', me.id);
     if (isSuperAdmin) socket.emit('joinSupport');
@@ -198,7 +185,7 @@ export default function SupportChat({
         setMessages((m) => merge(m, payload.message));
       }
     };
-socket.on('support:new', onNew);
+    socket.on('support:new', onNew);
     socket.on('support:thread:new', onNew);
 
     const onUpdated = (payload: { userId: string; message: SupportMsg }) => {
@@ -235,11 +222,11 @@ socket.on('support:new', onNew);
       socket.off('support:deleted', onDeleted);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me, isListMode, mode, channel, active, activeRoom, loadThreads, loadSupportRooms]);
+  }, [me, isSuperAdmin, hiddenForSuperAdmin, isListMode, mode, channel, active, activeRoom, loadThreads, loadSupportRooms]);
 
   // Polling fallback
   useEffect(() => {
-    if (!me) return;
+    if (!me || hiddenForSuperAdmin) return;
     const timer = window.setInterval(async () => {
       try {
         if (isListMode) {
@@ -260,7 +247,7 @@ socket.on('support:new', onNew);
       } catch { /* skip */ }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [me, isListMode, mode, channel, active, activeRoom, loadThreads, chUpper]);
+  }, [me, hiddenForSuperAdmin, isListMode, mode, channel, active, activeRoom, loadThreads, chUpper]);
 
   useEffect(() => {
     boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight });
@@ -346,6 +333,19 @@ socket.on('support:new', onNew);
     setChangingId(null);
   };
 
+  // Xavfsizlik: super_admin o'ziga o'zi "Super Admin'ga yozish" ko'rinmaydi
+  if (hiddenForSuperAdmin) {
+    return (
+      <div className="neo-card rounded-2xl p-8 text-center">
+        <ShieldCheck size={38} className="mx-auto text-yellow-400 mb-3" />
+        <p className="font-bold mb-1">Super Admin</p>
+        <p className="text-sm text-gray-400">
+          Murojaatlar boshqaruv panelidagi chat tablarida boshqariladi.
+        </p>
+      </div>
+    );
+  }
+
   if (!me) return null;
 
   const heading =
@@ -372,7 +372,9 @@ socket.on('support:new', onNew);
           {/* Threads */}
           <div className="space-y-1.5 max-h-[400px] overflow-y-auto scrollbar-thin lg:border-r lg:border-white/10 lg:pr-3">
             {loading ? (
-              <div className="space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-14 rounded-xl bg-cyber-800 animate-pulse" />)}</div>
+              <div className="space-y-2" role="status" aria-live="polite" aria-label="Murojaatlar yuklanmoqda">
+                {[1, 2, 3].map((i) => <div key={i} className="h-14 rounded-xl bg-cyber-800 animate-pulse" />)}
+              </div>
             ) : visibleThreads.length === 0 ? (
               <p className="text-sm text-gray-500 text-center py-10">Hozircha murojaatlar yo&apos;q</p>
             ) : (
@@ -380,6 +382,7 @@ socket.on('support:new', onNew);
                 <button
                   key={`${t.user.id}${t.room?.id || ''}`}
                   onClick={() => openThread(t.user.id, t.room?.id)}
+                  aria-current={active?.userId === t.user.id && (active.roomId ?? null) === (t.room?.id ?? null) ? 'true' : undefined}
                   className={cn(
                     'w-full text-left rounded-xl border px-3 py-2.5 transition-colors',
                     active?.userId === t.user.id && (active.roomId ?? null) === (t.room?.id ?? null)
@@ -433,7 +436,7 @@ socket.on('support:new', onNew);
                   onCancelEdit={cancelEdit}
                   changingId={changingId}
                 />
-                {err && <p className="px-5 pb-1 text-xs text-red-400">{err}</p>}
+                {err && <p role="alert" className="px-5 pb-1 text-xs text-red-400">{err}</p>}
                 <InputBar value={text} onChange={setText} onSend={send} sending={sending} placeholder="Javob yozing..." />
               </div>
             )}
@@ -445,17 +448,22 @@ socket.on('support:new', onNew);
           {mode === 'user' && channel === 'admin' && (
             <div className="px-5 pt-4">
               {loading ? (
-                <div className="flex gap-2">{[1, 2, 3].map((i) => <div key={i} className="h-9 w-28 rounded-full bg-cyber-800 animate-pulse" />)}</div>
+                <div className="flex gap-2" role="status" aria-live="polite" aria-label="Xonalar yuklanmoqda">
+                  {[1, 2, 3].map((i) => <div key={i} className="h-9 w-28 rounded-full bg-cyber-800 animate-pulse" />)}
+                </div>
               ) : supportRooms.length === 0 ? (
                 <p className="text-sm text-gray-500">Hozircha suhbat boshlash uchun xona topilmadi.</p>
               ) : (
                 <>
-                  <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Xona tanlang</p>
-                  <div className="flex flex-wrap gap-2">
+                  <p className="text-[10px] uppercase tracking-wider text-gray-400 mb-1.5 font-medium" id="support-room-picker">
+                    Xona tanlang
+                  </p>
+                  <div className="flex flex-wrap gap-2" role="group" aria-labelledby="support-room-picker">
                     {supportRooms.map((r) => (
                       <button
                         key={r.id}
                         onClick={() => openRoom(r)}
+                        aria-pressed={activeRoom?.id === r.id}
                         className={cn(
                           'text-xs font-medium rounded-full border px-3 py-1.5 flex items-center gap-1.5 transition-colors',
                           activeRoom?.id === r.id ? 'border-neon-cyan/50 bg-neon-cyan/10 text-neon-cyan' : 'border-white/10 bg-cyber-900 text-gray-300 hover:border-neon-cyan/30'
@@ -493,7 +501,7 @@ socket.on('support:new', onNew);
               }
             />
           </div>
-          {err && <p className="px-5 text-xs text-red-400">{err}</p>}
+          {err && <p role="alert" className="px-5 text-xs text-red-400">{err}</p>}
           <div className="border-t border-white/10 p-3">
             <InputBar
               value={text}
@@ -533,7 +541,7 @@ function ThreadHeader({ name, email, phone, role, roomName, onClear }: {
         </div>
       </div>
       {onClear && (
-        <button onClick={onClear} title="Murojaatni tozalash" className="p-2 rounded-lg text-red-400 hover:bg-red-500/10 shrink-0"><Trash2 size={14} /></button>
+        <button onClick={onClear} title="Murojaatni tozalash" aria-label="Murojaatni tozalash" className="p-2 rounded-lg text-red-400 hover:bg-red-500/10 shrink-0"><Trash2 size={14} /></button>
       )}
     </div>
   );
@@ -556,14 +564,16 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
 }) {
   if (loading) {
     return (
-      <div className="p-5 space-y-2">{[1, 2, 3].map((i) => <div key={i} className="h-10 rounded-lg bg-cyber-800 animate-pulse w-3/5" />)}</div>
+      <div className="p-5 space-y-2" role="status" aria-live="polite" aria-label="Xabarlar yuklanmoqda">
+        {[1, 2, 3].map((i) => <div key={i} className="h-10 rounded-lg bg-cyber-800 animate-pulse w-3/5" />)}
+      </div>
     );
   }
   if (messages.length === 0) {
     return <p className="text-sm text-gray-500 text-center py-12 px-5">{empty || ('Xabar yo\'q')}</p>;
   }
   return (
-    <div ref={boxRef} className="h-[360px] overflow-y-auto scrollbar-thin p-5 space-y-2.5">
+    <div ref={boxRef} role="log" aria-live="polite" aria-label="Xabarlar" className="h-[360px] overflow-y-auto scrollbar-thin p-5 space-y-2.5">
       {messages.map((m) => {
         const mine = m.senderId === meId;
         const author = m.senderId === m.userId ? m.user : m.sender;
@@ -576,7 +586,7 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
           <div key={m.id} className={cn('flex', mine ? 'justify-end' : 'justify-start')}>
             <div className={cn('group relative max-w-[80%] rounded-2xl px-3.5 py-2 text-sm', mine ? 'bg-yellow-400/15 border border-yellow-400/25 text-gray-100' : 'bg-cyber-800 border border-white/10 text-gray-200')}>
               <div className={cn('flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide mb-0.5', mine ? 'text-yellow-400' : 'text-gray-500')}>
-                <AuthorLabel mine={mine} isSupport={isSupport} isRoomReply={isRoomReply} authorName={author?.fullName} role={author?.role} />
+                <AuthorLabel isSupport={isSupport} isRoomReply={isRoomReply} authorName={author?.fullName} role={author?.role} />
               </div>
               {isEditing ? (
                 <textarea
@@ -584,6 +594,7 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
                   value={editing?.text || ''}
                   onChange={(e) => onTextChange?.(e.target.value)}
                   rows={2}
+                  aria-label="Xabarni tahrirlash"
                   className="w-full bg-cyber-900/80 border border-yellow-400/30 rounded-lg px-2.5 py-1.5 text-sm outline-none resize-none focus:border-yellow-400/60"
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSaveEdit?.(); } }}
                 />
@@ -616,6 +627,7 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
                   <button
                     onClick={() => onEdit?.(m)}
                     title="Tahrirlash"
+                    aria-label="Xabarni tahrirlash"
                     disabled={busy}
                     className="p-1 rounded-md text-gray-500 hover:text-yellow-400 hover:bg-yellow-400/10 disabled:opacity-40"
                   >
@@ -624,6 +636,7 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
                   <button
                     onClick={() => onDelete?.(m)}
                     title="O'chirish"
+                    aria-label="Xabarni o'chirish"
                     disabled={busy}
                     className="p-1 rounded-md text-gray-500 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-40"
                   >
@@ -639,8 +652,7 @@ function MessageList({ messages, meId, boxRef, loading, empty, canManage, onEdit
   );
 }
 
-function AuthorLabel({ mine, isSupport, isRoomReply, authorName, role }: {
-  mine: boolean;
+function AuthorLabel({ isSupport, isRoomReply, authorName, role }: {
   isSupport: boolean;
   isRoomReply: boolean;
   authorName?: string;
@@ -671,12 +683,14 @@ function InputBar({ value, onChange, onSend, sending, placeholder }: {
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(); } }}
         placeholder={placeholder}
+        aria-label="Xabar matni"
         rows={1}
-        className="glass-input flex-1 rounded-xl px-3 py-2 text-sm outline-none resize-none max-h-24"
+        className="glass-input flex-1 min-w-0 rounded-xl px-3 py-2 text-sm outline-none resize-none max-h-24"
       />
       <button
         onClick={onSend}
         disabled={sending || !value.trim()}
+        aria-label="Xabar yuborish"
         className="w-10 h-10 rounded-xl neon-btn grid place-items-center shrink-0 disabled:opacity-40"
       >
         {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}

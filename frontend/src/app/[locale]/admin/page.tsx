@@ -11,9 +11,9 @@ import {
 } from 'lucide-react';
 import api, { getApiErrorMessage } from '@/lib/api';
 import { toastError, toastSuccess } from '@/lib/toast';
-import { confirmDialog } from '@/lib/confirm';
+import { confirmDialog, promptDialog } from '@/lib/confirm';
 import { getSocket } from '@/lib/socket';
-import type { Room, Zone, Computer, Booking, PromoCode, NewsItem, BookingStatus } from '@/lib/types';
+import type { Room, Zone, Computer, Booking, PromoCode, NewsItem } from '@/lib/types';
 import { formatPrice, formatDate, formatDateTime, todayISO, zoneTypeLabel, cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/auth';
 import BarAdmin from '@/components/admin/BarAdmin';
@@ -507,16 +507,22 @@ function BookingsTab({ room }: { room?: Room | null }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<BookingsError | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 25;
 
-  const load = useCallback(async (opts?: { silent?: boolean }) => {
+  const load = useCallback(async (opts?: { silent?: boolean; page?: number }) => {
     if (!opts?.silent) setLoading(true);
     setError(null);
     try {
-      const { data } = await api.get('/api/bookings/admin/bookings');
+      const currentPage = opts?.page ?? 0;
+      const { data } = await api.get('/api/bookings/admin/bookings', {
+        params: { limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE },
+      });
       // Backend kontrakti: data = { success, message, data: { bookings: Booking[], total } }
       const list = data?.data?.bookings;
       setBookings(Array.isArray(list) ? list : []);
       setTotal(typeof data?.data?.total === 'number' ? data.data.total : (Array.isArray(list) ? list.length : 0));
+      setPage(currentPage);
     } catch (err) {
       if (!opts?.silent) setError(classifyBookingsError(err));
     } finally {
@@ -528,26 +534,49 @@ function BookingsTab({ room }: { room?: Room | null }) {
 
   // Real vaqt: yangi bron / holat o'zgarishi / sahifa fokusiga qaytishda jimgina yangilash
   useEffect(() => {
-    const onFocus = () => load({ silent: true });
-    const onVisibility = () => { if (document.visibilityState === 'visible') load({ silent: true }); };
+    const onFocus = () => load({ silent: true, page });
+    const onVisibility = () => { if (document.visibilityState === 'visible') load({ silent: true, page }); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisibility);
     const socket = getSocket();
-    const onBookingChanged = () => load({ silent: true });
+    const onBookingChanged = () => load({ silent: true, page });
     socket.on('booking_status_changed', onBookingChanged);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisibility);
       socket.off('booking_status_changed', onBookingChanged);
     };
-  }, [load]);
+  }, [load, page]);
 
-  async function setStatus(id: string, status: BookingStatus) {
+  // Bron tasdiqlash / rad etish — YAGONA yo'l: /admin/bookings/:id/approval.
+  // Eski /status endpoint'i faqat CONFIRMED (approve) va CANCELLED ni qabul
+  // qiladi; ACTIVE/COMPLETED o'tishlari faqat sessiya oqimi orqali bo'ladi.
+  async function reviewApproval(id: string, action: 'approve' | 'reject', reason?: string) {
     setUpdatingId(id);
     try {
-      await api.patch(`/api/bookings/admin/bookings/${id}/status`, { status });
-      setBookings((prev) => prev.map((b) => b.id === id ? { ...b, status } : b));
-      toastSuccess(`Bron: ${status}`);
+      const { data } = await api.patch(`/api/bookings/admin/bookings/${id}/approval`, { action, reason });
+      const updated = data?.data;
+      setBookings((prev) => prev.map((b) => (b.id === id
+        ? { ...b, ...(updated && typeof updated === 'object' ? updated : {}), approvalStatus: action === 'approve' ? 'APPROVED' : 'REJECTED' }
+        : b)));
+      toastSuccess(action === 'approve' ? 'Bron tasdiqlandi' : 'Bron rad etildi');
+    } catch (err) { toastError(getApiErrorMessage(err)); }
+    finally { setUpdatingId(null); }
+  }
+
+  async function cancelBooking(id: string) {
+    const ok = await confirmDialog({
+      title: 'Bronni bekor qilish',
+      message: 'Bron bekor qilinsinmi? Foydalanuvchi xabardor qilinadi.',
+      confirmLabel: 'Bekor qilish',
+      danger: true,
+    });
+    if (!ok) return;
+    setUpdatingId(id);
+    try {
+      await api.patch(`/api/bookings/admin/bookings/${id}/status`, { status: 'CANCELLED', reason: 'Admin bekor qildi' });
+      setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, status: 'CANCELLED' } : b)));
+      toastSuccess('Bron bekor qilindi');
     } catch (err) { toastError(getApiErrorMessage(err)); }
     finally { setUpdatingId(null); }
   }
@@ -559,9 +588,26 @@ function BookingsTab({ room }: { room?: Room | null }) {
     ACTIVE: 'bg-neon-green/15 text-neon-green', COMPLETED: 'bg-gray-500/15 text-gray-400', CANCELLED: 'bg-red-500/15 text-red-400',
   };
 
-  const paidPayments = (b: Booking) => (Array.isArray(b.payments) ? b.payments : []).filter((p) => p.status === 'COMPLETED');
+  const APPROVAL_BADGE: Record<string, string> = {
+    PENDING: 'bg-yellow-500/15 text-yellow-400',
+    APPROVED: 'bg-neon-green/15 text-neon-green',
+    REJECTED: 'bg-red-500/15 text-red-400',
+  };
+
+  // To'lovni "to'langan" deb hisoblaydigan holatlar — backend PAID_STATUSES
+  // bilan BIR XIL bo'lishi shart (eski kod faqat COMPLETED ni tekshirgan, shuning
+  // uchun real PAYME/CLICK/PAYNET to'lovlari "To'lanmagan" ko'rinardi).
+  const PAID_STATUSES = new Set(['PAID', 'COMPLETED']);
+  const paidPayments = (b: Booking) => (Array.isArray(b.payments) ? b.payments : []).filter((p) => PAID_STATUSES.has(p.status));
   const paidTotal = (b: Booking) => paidPayments(b).reduce((acc, p) => acc + Number(p.amount || 0), 0);
   const paidMethods = (b: Booking) => paidPayments(b).map((p) => p.method || p.provider).filter(Boolean).join(', ');
+
+  // Admin uchun "tasdiqlash mumkin"mi? Backend SESSION_STARTABLE =
+  // CONFIRMED | PARTIALLY_PAID | PAID. Depozit to'langan (PARTIALLY_PAID)
+  // bronni tasdiqlash ASOSIY oqim — u ham ko'rsatilishi kerak.
+  const SESSION_STARTABLE = new Set(['CONFIRMED', 'PARTIALLY_PAID', 'PAID']);
+  const isClosed = (b: Booking) => b.status === 'CANCELLED' || b.status === 'COMPLETED';
+  const canApprove = (b: Booking) => !isClosed(b) && b.approvalStatus !== 'APPROVED' && SESSION_STARTABLE.has(b.status);
 
   return (
     <div className="neo-card rounded-2xl p-5">
@@ -601,6 +647,7 @@ function BookingsTab({ room }: { room?: Room | null }) {
                 <th className="text-left pb-2 pr-4">Narx</th>
                 <th className="text-left pb-2 pr-4">To'lov</th>
                 <th className="text-left pb-2 pr-4">Holat</th>
+                <th className="text-left pb-2 pr-4">Tasdiq</th>
                 <th className="text-left pb-2">Amallar</th>
               </tr>
             </thead>
@@ -633,19 +680,83 @@ function BookingsTab({ room }: { room?: Room | null }) {
                   <td className="py-3 pr-4">
                     <span className={cn('px-2 py-1 rounded text-xs font-medium', STATUS_BADGE[b.status] || 'bg-gray-500/15 text-gray-400')}>{b.status}</span>
                   </td>
+                  <td className="py-3 pr-4">
+                    <span className={cn('px-2 py-1 rounded text-xs font-medium', APPROVAL_BADGE[b.approvalStatus || 'PENDING'] || 'bg-gray-500/15 text-gray-400')}>
+                      {b.approvalStatus === 'APPROVED' ? 'Tasdiqlandi' : b.approvalStatus === 'REJECTED' ? 'Rad etildi' : 'Kutilmoqda'}
+                    </span>
+                    {b.rejectionReason && (
+                      <span className="block text-[10px] text-red-400/80 mt-1 max-w-[180px] truncate" title={b.rejectionReason}>
+                        {b.rejectionReason}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-3">
                     {updatingId === b.id ? (
                       <Loader2 size={14} className="animate-spin text-neon-cyan" />
-                    ) : ['PENDING', 'PENDING_PAYMENT'].includes(b.status) ? (
-                      <button onClick={() => setStatus(b.id, 'CONFIRMED')} className="text-xs text-neon-green hover:underline">Tasdiqlash</button>
-                    ) : ['CONFIRMED', 'ACTIVE', 'PARTIALLY_PAID', 'PAID'].includes(b.status) ? (
-                      <button onClick={() => setStatus(b.id, 'COMPLETED')} className="text-xs text-gray-400 hover:underline">Yakunlash</button>
-                    ) : null}
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-3">
+                        {canApprove(b) && (
+                          <button onClick={() => reviewApproval(b.id, 'approve')} className="text-xs text-neon-green hover:underline">
+                            Tasdiqlash
+                          </button>
+                        )}
+                        {canApprove(b) && (
+                          <button
+                            onClick={async () => {
+                              // Sabab MAJBURIY — backend `reason` bo'lmasa rad etadi.
+                              const reason = await promptDialog({
+                                title: 'Bronni rad etish',
+                                message: 'Sababni yozing — foydalanuvchiga ko\'rsatiladi.',
+                                confirmLabel: 'Rad etish',
+                                danger: true,
+                                input: { label: 'Sabab', placeholder: 'Masalan: to\'lov tasdiqlanmadi', required: true, maxLength: 500 },
+                              });
+                              if (reason) reviewApproval(b.id, 'reject', reason);
+                            }}
+                            className="text-xs text-red-400 hover:underline"
+                          >
+                            Rad etish
+                          </button>
+                        )}
+                        {!isClosed(b) && (
+                          <button onClick={() => cancelBooking(b.id)} className="text-xs text-gray-400 hover:underline">
+                            Bekor qilish
+                          </button>
+                        )}
+                        {b.approvalStatus === 'APPROVED' && b.status === 'ACTIVE' && (
+                          <span className="text-[10px] text-gray-500">Sessiya faol</span>
+                        )}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {total > PAGE_SIZE && (
+        <div className="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-neon-cyan/10">
+          <span className="text-xs text-gray-500">
+            {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} / {total}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => load({ page: page - 1 })}
+              disabled={page === 0 || loading}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-cyber-800 hover:bg-cyber-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Oldingi
+            </button>
+            <button
+              onClick={() => load({ page: page + 1 })}
+              disabled={(page + 1) * PAGE_SIZE >= total || loading}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium bg-cyber-800 hover:bg-cyber-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Keyingi
+            </button>
+          </div>
         </div>
       )}
     </div>

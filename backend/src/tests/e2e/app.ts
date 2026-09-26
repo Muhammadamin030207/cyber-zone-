@@ -10,6 +10,7 @@ import webauthnRoutes from '../../routes/webauthn.routes';
 import userRoutes from '../../routes/user.routes';
 import settingsRoutes from '../../routes/settings.routes';
 import { errorHandler, notFound } from '../../middlewares/error';
+import { requestContext } from '../../middlewares/requestContext';
 
 /**
  * E2E test ilovasi — server.ts bilan bir xil route mount'lari, ammo:
@@ -21,6 +22,7 @@ import { errorHandler, notFound } from '../../middlewares/error';
 export function buildTestApp() {
   const app = express();
   app.set('trust proxy', 1);
+  app.use(requestContext);
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
 

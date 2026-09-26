@@ -17,6 +17,26 @@ export function nextIp(): string {
   return `10.${(ipCounter >> 8) % 250}.${ipCounter % 250}.7`;
 }
 
+/**
+ * So'rovga ALOHIDA IP qo'shadi (per-IP Redis rate limiterlar test faylda
+ * trip qilmasligi uchun). Limiter O'CHIRILMAYDI — u haqiqatan ishlaydi,
+ * faqat har so'rov boshqa mijoz sifatida ko'rinadi.
+ *
+ * Foydalanish: `await apiFromNewIp().post('/api/x').send({...})`
+ */
+export function apiFromNewIp() {
+  const agent = request(testApp);
+  const ip = nextIp();
+  const withIp = (t: request.Test) => t.set('X-Forwarded-For', ip);
+  return {
+    get: (u: string) => withIp(agent.get(u)),
+    post: (u: string) => withIp(agent.post(u)),
+    put: (u: string) => withIp(agent.put(u)),
+    patch: (u: string) => withIp(agent.patch(u)),
+    delete: (u: string) => withIp(agent.delete(u)),
+  };
+}
+
 export function auth(token: string): string {
   return `Bearer ${token}`;
 }

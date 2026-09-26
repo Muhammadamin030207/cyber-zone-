@@ -29,3 +29,14 @@ npm-debug.log*
 *.swp
 *.swo
 .env*
+
+# PostgreSQL `pg_dump` backuplari — ichida foydalanuvchi ma'lumotlari,
+# parol xeshlari va sessionlar bo'lishi MUMKIN. Hech qachon repo'ga tushmaydi.
+.backups/
+*.dump
+*.sql.gz
+
+# Loglar
+*.log
+npm-debug.log*
+logs/

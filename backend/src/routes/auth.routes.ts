@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import { createRedisRateLimiter } from '../lib/redis';
 import { register, login, logout, googleLogin, refreshToken, getMe, updateProfile, uploadAvatarImage, changePassword, forgotPassword, resetPassword, setNewPassword, securityEvents, unlockAccount } from '../controllers/auth.controller';
 import {
   twoFactorStatus,
@@ -27,11 +27,10 @@ function clientIpKey(req: any): string {
  * Ro'yxatdan o'tish spam himoyasi: IP bo'yicha soatiga cheklangan son
  * (shared NAT — shu sababli keng: 10/soat, kalit — IP).
  */
-const registerLimiter = rateLimit({
+const registerLimiter = createRedisRateLimiter({
   windowMs: 60 * 60 * 1000,
   limit: 10,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
+  keyPrefix: 'rl:register',
   keyGenerator: (req: any) => clientIpKey(req),
   message: { success: false, message: 'Juda ko\'p ro\'yxatdan o\'tish. Birozdan so\'ng qayta urinib ko\'ring.' },
 });
@@ -41,32 +40,29 @@ const registerLimiter = rateLimit({
  * foydalanuvchi (yoki bitta hisob) urinishlari boshqa foydalanuvchilarni
  * bloklamaydi. Hisob darajasidagi progressiv bloklash DB'da (loginThrottle).
  */
-const loginAccountLimiter = rateLimit({
+const loginAccountLimiter = createRedisRateLimiter({
   windowMs: 15 * 60 * 1000,
   limit: 20,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
+  keyPrefix: 'rl:login:account',
   keyGenerator: (req: any) => `${clientIpKey(req)}:${normalizeEmailKey(req.body?.email)}`,
   message: { success: false, message: "Juda ko'p urinish. Birozdan so'ng qayta urinib ko'ring." },
 });
 
 /** Umumiy IP himoyasi — juda keng (shared NAT/office tarmoqlarni bloklamasligi uchun). */
-const loginIpLimiter = rateLimit({
+const loginIpLimiter = createRedisRateLimiter({
   windowMs: 15 * 60 * 1000,
   limit: 150,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
+  keyPrefix: 'rl:login:ip',
   keyGenerator: (req: any) => clientIpKey(req),
   message: { success: false, message: "Juda ko'p urinish. Birozdan so'ng qayta urinib ko'ring." },
 });
 
 // Forgot-password spam'i: IP + email juftligi (bir hisobning spam'i boshqalarga tegmaydi)
 // Spec §4.0 tavsiyasi: 15 daqiqada 1-2 so'rov/email. 3 tasiga ruxsat — qayta urinish uchun yetarli.
-const forgotLimiter = rateLimit({
+const forgotLimiter = createRedisRateLimiter({
   windowMs: 15 * 60 * 1000,
   limit: 3,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
+  keyPrefix: 'rl:forgot',
   keyGenerator: (req: any) => `${clientIpKey(req)}:${normalizeEmailKey(req.body?.email)}`,
   message: { success: false, message: "Juda ko'p so'rov. Birozdan so'ng qayta urinib ko'ring." },
 });

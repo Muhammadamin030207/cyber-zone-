@@ -1,4 +1,5 @@
 import { toNumber, round2 } from './money';
+import { config } from '../config';
 
 export interface PromoDiscount {
   discountType?: 'PERCENTAGE' | 'FIXED' | string;
@@ -12,6 +13,13 @@ export interface PricingInput {
   promo?: PromoDiscount | null;
   pointsToUse?: number; // bonus ball (1 ball = 1 so'm)
   maxPointsPercent?: number; // ball bilan qoplash mumkin bo'lgan maksimal foiz (0.5 = 50%)
+  /**
+   * Depozit (avans) foizi — 1..100. Berilmasa `DEPOSIT_PERCENT` envidan olinadi
+   * (standart 30). FOIZ HECH QACHON kodda hardcode emas: admin/config orqali
+   * o'zgartiriladi. Natija bronga `depositPercent` sifatida YOZILADI, shuning
+   * uchun keyingi to'lovlar aynan shu foiz bo'yicha talab qilinadi.
+   */
+  depositPercent?: number;
 }
 
 export interface PricingResult {
@@ -23,6 +31,16 @@ export interface PricingResult {
   pointsUsed: number;
   advance: number;
   remaining: number;
+  /** Bronning depozit foizi — bronga shu qiymat yoziladi. */
+  depositPercent: number;
+}
+
+/** Depozit foizini 1..100 oralig'iga (butun son) keltiradi. */
+export function resolveDepositPercent(value?: number | null): number {
+  const raw = value === undefined || value === null || !Number.isFinite(Number(value))
+    ? config.payments.depositPercent
+    : Math.trunc(Number(value));
+  return Math.min(100, Math.max(1, Number.isFinite(raw) ? raw : config.payments.depositPercent));
 }
 
 /**
@@ -58,7 +76,12 @@ export function computeBookingPrice(input: PricingInput): PricingResult {
 
   const totalDiscount = round2(discountPromo + discountPoints);
   const finalTotal = round2(Math.max(0, baseTotal - totalDiscount));
-  const advance = round2(finalTotal * 0.3);
+
+  // 3) Depozit / qoldiq — server konfiguratsiyasi (DEPOSIT_PERCENT, standart 30%).
+  //    `advance + remaining === finalTotal` DOIM teng bo'lishi kafolatlanadi
+  //    (qoldiq "qoldiq"dan hisoblanadi, alohida yuvilmaydi).
+  const depositPercent = resolveDepositPercent(input.depositPercent);
+  const advance = round2((finalTotal * depositPercent) / 100);
   const remaining = round2(finalTotal - advance);
 
   return {
@@ -70,5 +93,6 @@ export function computeBookingPrice(input: PricingInput): PricingResult {
     pointsUsed,
     advance,
     remaining,
+    depositPercent,
   };
 }

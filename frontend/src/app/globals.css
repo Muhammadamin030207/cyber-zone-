@@ -678,12 +678,27 @@ a:hover { opacity: 0.9; }
    MOBILE UX POLISH — telefon/bottom-nav qulayligi
    ============================================================ */
 
-/* Bottom tab bar'ni hisobga olib sahifa pastki qismiga chip tashlash */
-main {
-  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+:root {
+  --tabbar-space: 5.5rem;
+  --content-bottom: calc(var(--tabbar-space) + env(safe-area-inset-bottom, 0px));
+  --fab-bottom: calc(var(--content-bottom) + 0.5rem);
+  --toast-bottom: calc(var(--fab-bottom) + 0.25rem);
 }
-@media (min-width: 768px) {
-  main { padding-bottom: 0; }
+@media (min-width: 1024px) {
+  :root {
+    --tabbar-space: 0rem;
+    --content-bottom: 0rem;
+    --fab-bottom: 1.25rem;
+  }
+}
+main {
+  padding-bottom: var(--content-bottom);
+}
+
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  body > div.fixed[aria-live='polite'] {
+    bottom: var(--toast-bottom) !important;
+  }
 }
 
 /* Telefonlarda barmoq uchun qulayroq touch maqsadlar va silliq scroll */

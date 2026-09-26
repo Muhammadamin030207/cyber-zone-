@@ -36,10 +36,22 @@ export const config = {
     // To'lanmagan bronni avtomatik bekor qilish muddati (daqiqa). Abandoned
     // PENDING/PENDING_PAYMENT bronlar vaqt oralig'ini qulflab qoymasligi uchun.
     unpaidTtlMinutes: Math.max(5, parseInt(process.env.UNPAID_BOOKING_TTL_MINUTES || '60', 10)),
+    // Taymer/band qilish worker'i chastotasi (ms): tugagan sessiyalarni
+    // O'Z-O'ZICHIGA yopadi, kompyuterni bo'shatadi, muddati o'tgan
+    // to'lanmagan bronlarni bekor qiladi. 30s — foydalanuvchi sezmaydi.
+    workerIntervalMs: Math.max(10_000, parseInt(process.env.BOOKING_WORKER_INTERVAL_MS || '30_000', 10)),
+    // Availability javobini Redis'da qanchacha saqlash (soniya). DB
+    // yukini 1000+ foydalanuvchida kamaytiradi (yozishda darhol
+    // invalidatsiya qilinadi).
+    availabilityCacheTtlSec: Math.max(0, parseInt(process.env.AVAILABILITY_CACHE_TTL_SEC || '15', 10)),
   },
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6380',
   payments: {
     minDepositPercent: Math.min(100, Math.max(1, parseInt(process.env.MIN_DEPOSIT_PERCENT || '10', 10))),
+    /** Standart depozit (avans) foizi — SERVER avtoritet. */
+    depositPercent: Math.min(100, Math.max(1, parseInt(process.env.DEPOSIT_PERCENT || '30', 10))),
+    /** Sessiya tugagandan keyingi qarzni to'lash muddati (kun). */
+    debtDueDays: Math.max(1, parseInt(process.env.DEBT_DUE_DAYS || '7', 10)),
     callbackBaseUrl: process.env.PROVIDER_CALLBACK_URL || '',
     /**
      * SANDBOX (dev) rejimi — real kredensiallarsiz Click/Payme to'lov oqimini
@@ -54,15 +66,18 @@ export const config = {
       const raw = (process.env.PAYMENTS_DEV_MODE || '').trim().toLowerCase();
       const wanted = raw === '1' || raw === 'true' || raw === 'force';
       if (!wanted) return false;
-      if (process.env.NODE_ENV === 'production' && raw !== 'force') {
-        console.warn('[PAYMENTS] PAYMENTS_DEV_MODE production\'da faqat "force" qiymati bilan yoqiladi. Sandbox o\'chirildi.');
+      // PRODUCTION'DA HECH QANDAY SHAROITDA yoqilmaydi (spec §3).
+      // Eski "force" bypass olib tashlandi: u config.payments.devMode'ni
+      // production'da `true` qilib qo'yib, kelgusi kodda to'g'ridan-to'g'ri
+      // shu qiymatni o'qish orqali `paymentsSandbox()` qat'iy qatlamini
+      // chetlab o'tishga imkon berardi. Endi ikki qatlam bir-birini tekshiradi:
+      //   1) config.payments.devMode  -> production'da doim false
+      //   2) paymentsSandbox()        -> production'da qat'iy false
+      if (process.env.NODE_ENV === 'production') {
+        console.error('[PAYMENTS] ⚠️ PAYMENTS_DEV_MODE production\'da butunlay taqiqlangan — sandbox o\'chirildi.');
         return false;
       }
-      if (raw === 'force') {
-        console.warn('[PAYMENTS] ⚠️ SANDBOX rejimi yoqildi (force) — bu REAL PUL qabul qilmaydigan sinov rejimi.');
-      } else {
-        console.log('[PAYMENTS] SANDBOX rejimi yoqildi — Click/Payme dev kredensiallari bilan sinovda.');
-      }
+      console.log('[PAYMENTS] SANDBOX rejimi yoqildi — Click/Payme dev kredensiallari bilan sinovda.');
       return true;
     })(),
     /** Mock gateway'ni chaqirish uchun maxsus kalit (SANDBOX'da mo`ljallangan). */
@@ -138,5 +153,25 @@ export const config = {
     fallbackModel: process.env.GEMINI_FALLBACK_MODEL || 'gemini-flash-lite-latest',
     temperature: parseFloat(process.env.AI_TEMPERATURE || '0.7'),
     maxTokens: parseInt(process.env.AI_MAX_TOKENS || '1000', 10),
+  },
+  vip: {
+    // VIP zona uchun bir bronning MAXIMAL davomiyligi (daqiqa). 60 = faqat
+    // 1 soatlik bron. Server avtoritet: frontend'dan kelgan davomiylik ham
+    // shu chegara bilan kesiladi (booking.controller.ts).
+    maxBookingMinutes: Math.max(30, parseInt(process.env.VIP_MAX_BOOKING_MINUTES || '60', 10)),
+  },
+  paymentsTransfer: {
+    // Karta/hisob orqali o'tkazma: saytda faqat O'Z kartamiz ko'rsatiladi.
+    // Foydalanuvchi o'z bank ilovasida to'laydi va chek (screenshot/PDF)
+    // yuklaydi — hech qanday karta raqami saytga yuborilmaydi.
+    cardNumber: (process.env.TRANSFER_CARD_NUMBER || '').replace(/\s+/g, ''),
+    cardHolder: process.env.TRANSFER_CARD_HOLDER || '',
+    bankName: process.env.TRANSFER_BANK_NAME || '',
+    // "Ilovaga o'tish" tugmasi uchun havola (bank ilovasi / to'lov sahifasi)
+    appUrl: process.env.TRANSFER_APP_URL || '',
+    /** Usul mavjudmi — aks holda frontend'da ko'rsatilmaydi. */
+    get enabled() {
+      return Boolean(this.cardNumber && this.cardHolder);
+    },
   },
 };

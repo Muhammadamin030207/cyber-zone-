@@ -2,7 +2,6 @@
   "nav": {
     "home": "Главная",
     "rooms": "Компьютерные клубы",
-    "news": "Новости",
     "login": "Вход",
     "register": "Регистрация",
     "logout": "Выйти",
@@ -32,21 +31,14 @@
     "heroSubtitle": "Найдите лучшие компьютерные клубы, бронируйте и играйте",
     "searchPlaceholder": "Введите название клуба или адрес...",
     "searchBtn": "Поиск",
-    "statsTitle": "На платформе",
     "popularTitle": "Популярные клубы",
     "popularSubtitle": "Лучшие игровые места",
-    "featuresTitle": "Почему Cyber-ZONE?",
-    "features": {
-      "book": "Быстрое бронирование",
-      "bookDesc": "Онлайн бронирование, занятость ПК в реальном времени",
-      "premium": "Премиум клубы",
-      "premiumDesc": "Современные ПК, VIP зоны",
-      "secure": "Безопасные платежи",
-      "secureDesc": "Payme, Click и UZCARD"
-    },
-    "ctaTitle": "У вас компьютерный клуб?",
-    "ctaSubtitle": "Зарегистрируйтесь и добавьте клуб на платформу",
-    "ctaBtn": "Стать админом"
+    "roomsCount": "Всего {count} клубов",
+    "roomsCountTruncated": "Показано {shown} из {count}",
+    "roomsEmpty": "Пока нет добавленных клубов",
+    "mapTitle": "Все клубы на карте",
+    "mapSubtitle": "Найдите ближайший игровой клуб по Ташкенту",
+    "mapCta": "Открыть карту"
   },
   "rooms": {
     "title": "Компьютерные клубы",

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { chat, chatStream } from '../controllers/ai.controller';
-import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middlewares/auth';
+import { createRedisRateLimiter } from '../lib/redis';
 
 const router = Router();
 
@@ -11,12 +11,10 @@ const router = Router();
  * Gemini/Claude API xarajatini cheklash uchun alohida rate-limit qo'llanadi.
  * Faqat autentifikatsiyadan o'tgan foydalanuvchilar (o'z bron/to'lov ma'lumotlari bilan).
  */
-const aiRate = rateLimit({
+const aiRate = createRedisRateLimiter({
   windowMs: 60 * 1000,
   limit: 6,
-  standardHeaders: false,
-  legacyHeaders: false,
-  skipSuccessfulRequests: false,
+  keyPrefix: 'rl:ai:chat',
   message: { success: false, message: 'Juda ko\'p so\'rov yuborildi. Bir daqiqadan so\'ng qayta urinib ko\'ring.' },
 });
 

@@ -5,6 +5,15 @@ import { io } from '../lib/socket';
 import { ok, created, badRequest, forbidden, notFoundMsg } from '../utils/response';
 import { toNumber, round2 } from '../utils/money';
 import { computeBookingPrice } from '../utils/pricing';
+import { config } from '../config';
+import { cacheGet, cacheSet, cacheDel } from '../lib/redis';
+import {
+  finalizeSession,
+  startSessionGate,
+  slotInstants,
+  computeSessionCharge,
+  PAID_STATUSES,
+} from '../services/sessionService';
 import { Prisma, BookingStatus } from '@prisma/client';
 import {
   tashkentTodayISO,
@@ -19,7 +28,6 @@ import {
   toISODate,
   type SlotNorm,
 } from '../utils/time';
-import { expireUnpaidBeforeRead } from '../utils/bookingExpiry';
 import { getPromoIdentityIds, isPromoRecipient } from '../utils/promoIdentity';
 
 const ACTIVE_BOOKING_STATUSES = ['PENDING', 'PENDING_PAYMENT', 'PARTIALLY_PAID', 'PAID', 'CONFIRMED', 'ACTIVE'] as BookingStatus[];
@@ -46,6 +54,14 @@ async function activeBookingsForDay(
       computerId: { in: args.computerIds },
       date: { in: [args.date, prevDate] },
       status: { in: ACTIVE_BOOKING_STATUSES },
+      // To'lov kutilayotgan bron faqat o'z "band qilish" muddati (holdExpiresAt)
+      // ichida joyni ushlab turadi — muddati o'tgani worker hali tozalagan
+      // bo'lsa ham, availability uchun darhol bo'sh hisoblanadi.
+      OR: [
+        { status: { notIn: ['PENDING', 'PENDING_PAYMENT'] } },
+        { holdExpiresAt: null },
+        { holdExpiresAt: { gt: new Date() } },
+      ],
     },
     select: { computerId: true, startTime: true, endTime: true, date: true },
   });
@@ -73,10 +89,13 @@ async function activeBookingsForDay(
 
 const BOOKING_INCLUDE = {
   user: { select: { id: true, fullName: true, phone: true, email: true } },
-  room: { select: { id: true, name: true, address: true } },
+  room: { select: { id: true, name: true, address: true, ownerId: true } },
   zone: { select: { id: true, name: true, type: true, pricePerHour: true } },
   computer: { select: { id: true, name: true, specs: true } },
   promoCode: { select: { id: true, code: true, discountType: true, discountValue: true } },
+  approvedBy: { select: { id: true, fullName: true } },
+  rejectedBy: { select: { id: true, fullName: true } },
+  evidences: { orderBy: { createdAt: 'desc' as const } },
   payments: true,
 };
 
@@ -108,8 +127,11 @@ export const createBooking = async (req: AuthRequest, res: Response, next: NextF
       return forbidden(res, 'Bron faqat foydalanuvchilar uchun. Admin bron qila olmaydi');
     }
 
-    // Muddati o'tgan to'lanmagan bronlarni tozalash — band joylar qaytariladi
-    await expireUnpaidBeforeRead();
+    // Eskirgan to'lanmagan bronlarni tozalash ARTIQ shu so'rovda emas —
+    // u 30 soniyalik worker'da bajariladi (1000+ foydalanuvchida har bir
+    // so'rovda butun jadvalni skanerlash serverni bo'g'ardi). Band muddati
+    // o'tgan bronlar availability'da allaqachon bo'sh hisoblanadi
+    // (activeBookingsForDay: holdExpiresAt).
 
     const { roomId, zoneId, computerId, date, startTime, durationHours, notes, promoCode, usePoints, idempotencyKey } = req.body;
     let endTime = req.body.endTime as string | undefined;
@@ -176,6 +198,20 @@ export const createBooking = async (req: AuthRequest, res: Response, next: NextF
 
     const zone = await prisma.zone.findUnique({ where: { id: zoneId } });
     if (!zone || zone.roomId !== roomId) return notFoundMsg(res, 'Zona topilmadi');
+
+    // ============ VIP: faqat 1 soatlik bron (server avtoriteti) ============
+    // VIP zonada bir bron 1 soatdan oshmasligi kerak. Frontend cheklasa ham,
+    // bu yerda qayta tekshiriladi — "soat bo'yicha" to'lov shu mantiqaga asoslanadi.
+    if (zone.type === 'VIP') {
+      const maxMinutes = config.vip.maxBookingMinutes;
+      if (slot.end - slot.start > maxMinutes) {
+        return badRequest(
+          res,
+          `VIP zona uchun maksimal bron davomiyligi ${Math.round(maxMinutes / 60)} soat. Ko'proq vaqt uchun qo'shimcha bron yaratishingiz kerak.`,
+          'VIP_MAX_DURATION',
+        );
+      }
+    }
 
     const wh = normalizeWorkingHours(room.workingHours as { open?: string; close?: string } | null);
     if (!slotWithinWorkingHours(slot, wh)) {
@@ -357,8 +393,15 @@ export const createBooking = async (req: AuthRequest, res: Response, next: NextF
             pointsUsed: pointsToUse,
             advanceAmount: advance,
             remainingAmount: remaining,
+            // Depozit foizi bronga YOZILADI — keyingi to'lov talablari va
+            // "qancha to'lash kerak" hisobi aynan shu qiymatdan kelib chiqadi.
+            // (Frontend yuborgan foizga ishonilmaydi.)
+            depositPercent: pricing.depositPercent,
             status: 'PENDING',
             notes,
+            // Bron vaqt oralig'ini faqat shu muddatga ushlab turadi (soat).
+            // Muddati o'tsa — worker bekor qiladi va kompyuter bo'shatiladi.
+            holdExpiresAt: new Date(Date.now() + config.bookings.unpaidTtlMinutes * 60_000),
           },
           include: BOOKING_INCLUDE,
         });
@@ -407,6 +450,7 @@ export const createBooking = async (req: AuthRequest, res: Response, next: NextF
 
       // Socket — real vaqt yangilanish
       io.emit('booking_status_changed', { roomId, type: 'new_booking' });
+      void cacheDel(`avail:${roomId}:*`);
 
       return created(res, booking, `Bron yaratildi. ${Number(booking.depositPercent) || 30}% oldindan to'lov kerak`);
     } catch (txErr: any) {
@@ -517,6 +561,7 @@ export const cancelBooking = async (req: AuthRequest, res: Response, next: NextF
 
     // Socket — real vaqt
     io.emit('booking_status_changed', { roomId: booking.roomId, type: 'cancelled' });
+    void cacheDel(`avail:${booking.roomId}:*`);
 
     return ok(res, updated, 'Bron bekor qilindi');
   } catch (err) {
@@ -531,18 +576,10 @@ export const cancelBooking = async (req: AuthRequest, res: Response, next: NextF
 //               ortiq to'langan vaqt bonus ballga QAYTARILADI, kam bo'lsa
 //               qo'shimcha qoldiq to'lov (PENDING CASH) qayd qilinadi.
 
-const SESSION_PAID_STATUSES = ['PAID', 'COMPLETED'] as const;
+// Barcha moliyaviy hisoblar PAID_STATUSES (sessionService) va
+// startSessionGate (bitta manba) orqali hisoblanadi — controller ichida
+// ikkinchi nusxa (eskirgan formulalar) saqlanmaydi.
 const SESSION_STARTABLE = ['CONFIRMED', 'PARTIALLY_PAID', 'PAID'] as BookingStatus[];
-
-/** booking.date + HH:mm (Asia/Tashkent, UTC+5) -> mutlaq vaqt. "00:00" keyingi kun. */
-function localInstant(date: Date, minutes: number): Date {
-  const y = date.getUTCFullYear();
-  const mo = date.getUTCMonth();
-  const d = date.getUTCDate() + (minutes === 0 ? 1 : 0);
-  const h = Math.floor(minutes / 60);
-  const mi = minutes % 60;
-  return new Date(Date.UTC(y, mo, d, h - 5, mi));
-}
 
 function canManageBooking(booking: { userId: string; room: { ownerId: string } | null }, user: { userId: string; role: string }): boolean {
   if (booking.userId === user.userId) return true;
@@ -551,42 +588,57 @@ function canManageBooking(booking: { userId: string; room: { ownerId: string } |
   return false;
 }
 
+/** Jonli sessiya holati — frontend shundan timer va "Boshlash" tugmasini boshqaradi. */
 async function sessionState(now: Date, booking: any) {
+  const gate = startSessionGate(booking, now);
   const startMinutes = parseTime(booking.startTime) ?? 0;
   const endMinutes = parseTime(booking.endTime) ?? startMinutes + 60;
-  const bookedStart = localInstant(booking.date, startMinutes);
-  const bookedEnd = localInstant(booking.date, endMinutes);
+  const bookedStart = gate.bookedStart ?? localInstant(booking.date, startMinutes);
+  const bookedEnd = gate.bookedEnd ?? localInstant(booking.date, endMinutes);
+  const sessionEndsAt = booking.sessionEndsAt ?? bookedEnd;
 
   const zonePrice = booking.zone?.pricePerHour;
   const minBill = booking.minBillingMinutes ?? 60;
   let elapsedMinutes = 0;
-  let billedMinutes = 0;
-  let remainingMs = bookedEnd.getTime() - now.getTime();
+  let billedHours = 0;
+  let actualPrice: number | null = null;
 
   if (booking.sessionStartedAt) {
-    elapsedMinutes = Math.max(1, Math.ceil((now.getTime() - booking.sessionStartedAt.getTime()) / 60000));
-    billedMinutes = Math.max(minBill, elapsedMinutes);
+    const charge = computeSessionCharge({
+      sessionStartedAt: booking.sessionStartedAt,
+      now,
+      pricePerHour: zonePrice ?? 0,
+      minBillingMinutes: minBill,
+      totalPaid: 0,
+      pointsUsed: booking.pointsUsed,
+    });
+    elapsedMinutes = charge.elapsedMinutes;
+    billedHours = charge.billedHours;
+    actualPrice = charge.actualPrice;
   }
 
-  const actualPrice = booking.sessionStartedAt && zonePrice
-    ? round2(toNumber(zonePrice) * (billedMinutes / 60))
-    : null;
-
   const paidPayments = (booking.payments || []).filter((p: any) =>
-    (SESSION_PAID_STATUSES as readonly string[]).includes(p.status)
+    (PAID_STATUSES as readonly string[]).includes(p.status)
   );
   const totalPaid = round2(paidPayments.reduce((s: number, p: any) => s + round2(toNumber(p.amount)), 0));
   const prepaidValue = round2(totalPaid + toNumber(booking.pointsUsed || 0));
+  const remainingMs = sessionEndsAt.getTime() - now.getTime();
 
   return {
-    state: booking.status === 'ACTIVE' && booking.sessionStartedAt
-      ? 'active'
-      : booking.sessionEndedAt ? 'ended' : 'idle',
+    state: booking.status === 'ACTIVE' && booking.sessionStartedAt ? 'active' : booking.sessionEndedAt ? 'ended' : 'idle',
     serverTime: now.toISOString(),
     bookedStart: bookedStart.toISOString(),
     bookedEnd: bookedEnd.toISOString(),
+    sessionEndsAt: sessionEndsAt.toISOString(),
+    autoCloseInMs: booking.status === 'ACTIVE' ? Math.max(0, remainingMs) : 0,
+    approvalStatus: booking.approvalStatus,
+    approvedAt: booking.approvedAt,
+    rejectionReason: booking.rejectionReason ?? null,
+    canStart: gate.ok,
+    startBlockedBy: gate.ok ? null : gate.code ?? null,
+    startBlockedMessage: gate.ok ? null : gate.message ?? null,
     elapsedMinutes,
-    billedMinutes,
+    billedHours,
     remainingMs,
     overdueMs: remainingMs < 0 ? -remainingMs : 0,
     actualPrice,
@@ -596,7 +648,15 @@ async function sessionState(now: Date, booking: any) {
   };
 }
 
+/** booking.date + HH:mm -> mutlaq vaqt (Toshkent UTC+5) — tunga o'tishni to'g'ri hisoblaydi. */
+function localInstant(date: Date, minutes: number): Date {
+  const tashkentMidnightUtc = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) - 5 * 3_600_000;
+  return new Date(tashkentMidnightUtc + minutes * 60_000);
+}
+
 // ============ POST /api/bookings/:id/session/start — check-in ============
+// "Boshlash" faqat: (1) to'lov qoplangan, (2) ADMIN TASDIQLAGAN,
+// (3) bron vaqti boshlanib bo'lmagan va (4) vaqt tugamagan bo'lsa.
 export const startBookingSession = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const booking = await prisma.booking.findUnique({
@@ -613,42 +673,47 @@ export const startBookingSession = async (req: AuthRequest, res: Response, next:
       const state = await sessionState(now, booking);
       return ok(res, { booking, session: state }, 'Sessiya allaqachon boshlangan');
     }
-    if (booking.sessionEndedAt || booking.status === 'COMPLETED') {
-      return badRequest(res, 'Sessiya allaqachon yakunlangan');
-    }
-    if ((SESSION_STARTABLE as string[]).includes(booking.status) === false) {
-      return badRequest(res, 'Sessiyani boshlash uchun bron to\'langan bo\'lishi kerak (depozit).', 'BOOKING_NOT_PAID');
+
+    const gate = startSessionGate(booking, now);
+    if (!gate.ok) {
+      const status = gate.code === 'SESSION_ALREADY_ENDED' ? 400 : gate.code === 'BOOKING_NOT_APPROVED' ? 409 : 400;
+      return res.status(status).json({ success: false, message: gate.message, code: gate.code });
     }
 
-    // Server avtoritet: bron vaqtidan OLDIN check-in mumkin emas (oldingi bron band).
-    const startMinutes = parseTime(booking.startTime) ?? 0;
-    const bookedStart = localInstant(booking.date, startMinutes);
-    if (now.getTime() < bookedStart.getTime()) {
-      return badRequest(res, 'Sessiyani bron vaqtidan oldin boshlab bo\'lmaydi', 'SESSION_EARLY');
-    }
+    // Taymer chegarasini yozib qo'yamiz — worker shu vaqtda sessiyani
+    // O'Z-O'ZICHIGA yopadi va kompyuterni bo'shatadi.
+    const sessionEndsAt = gate.bookedEnd;
 
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: { status: 'ACTIVE', sessionStartedAt: now },
-      include: BOOKING_INCLUDE,
+    const updated = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.booking.updateMany({
+        where: { id: booking.id, status: { in: SESSION_STARTABLE }, sessionStartedAt: null, sessionEndedAt: null },
+        data: { status: 'ACTIVE', sessionStartedAt: now, sessionEndsAt, autoClosed: false },
+      });
+      if (claimed.count === 0) throw new Error('SESSION_RACE');
+      if (booking.computerId) {
+        await tx.computer.updateMany({ where: { id: booking.computerId }, data: { status: 'OCCUPIED' } });
+      }
+      return tx.booking.findUnique({ where: { id: booking.id }, include: BOOKING_INCLUDE });
     });
 
-    if (updated.computerId) {
-      await prisma.computer.update({
-        where: { id: updated.computerId },
-        data: { status: 'OCCUPIED' },
-      });
-    }
-
     io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: 'ACTIVE' });
+    io.to(`user:${booking.userId}`).emit('session_started', { bookingId: booking.id, sessionEndsAt: sessionEndsAt.toISOString() });
+    void cacheDel(`avail:${booking.roomId}:*`);
+
     const state = await sessionState(now, { ...booking, ...updated });
     return ok(res, { booking: updated, session: state }, 'Sessiya boshlandi');
   } catch (err) {
+    if ((err as Error)?.message === 'SESSION_RACE') {
+      return badRequest(res, 'Sessiya allaqachon boshlanib bo\'lgan', 'SESSION_ALREADY_STARTED');
+    }
     next(err);
   }
 };
 
 // ============ POST /api/bookings/:id/session/end — check-out (haqiqiy hisob) ============
+// HTTP va worker BIR xil `finalizeSession` funksiyasini chaqiradi: soatlik
+// hisob, qarz yoki ball qaytarish, kompyuterni bo'shatish — atomik va
+// idempotent (parallel bosishda hech qanday chalg'ilik bo'lmaydi).
 export const endBookingSession = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const booking = await prisma.booking.findUnique({
@@ -659,106 +724,42 @@ export const endBookingSession = async (req: AuthRequest, res: Response, next: N
     if (!canManageBooking(booking, req.user!)) return forbidden(res, 'Bu bron sizniki emas');
 
     if (booking.sessionEndedAt) {
-      return ok(res, { booking }, 'Sessiya allaqachon yakunlangan');
+      const state = await sessionState(new Date(), booking);
+      return ok(res, { booking, session: state }, 'Sessiya allaqachon yakunlangan');
     }
     if (booking.status !== 'ACTIVE' || !booking.sessionStartedAt) {
       return badRequest(res, 'Faol sessiya topilmadi — avval sessiyani boshlang', 'SESSION_NOT_STARTED');
     }
 
     const now = new Date();
-    const minBill = booking.minBillingMinutes ?? 60;
-    const elapsedMinutes = Math.max(1, Math.ceil((now.getTime() - booking.sessionStartedAt.getTime()) / 60000));
-    const billedMinutes = Math.max(minBill, elapsedMinutes);
-    const actualPrice = round2(toNumber(booking.zone.pricePerHour) * (billedMinutes / 60));
-
-    const paidPayments = (booking.payments || []).filter((p: any) =>
-      (SESSION_PAID_STATUSES as readonly string[]).includes(p.status)
+    const result = await prisma.$transaction(
+      (tx) => finalizeSession(tx, { bookingId: booking.id, now, auto: false }),
+      { timeout: 15_000, maxWait: 5_000 },
     );
-    const totalPaid = round2(paidPayments.reduce((s: number, p: any) => s + round2(toNumber(p.amount)), 0));
-    const prepaidValue = round2(totalPaid + toNumber(booking.pointsUsed || 0));
 
-    // Sessiya rasmiy yakunlanishi + kompyuter bo'shatish
-    let billingAdjustment = round2(actualPrice - prepaidValue);
-    let refundPoints = 0;
-    let extraDue = 0;
-
-    if (billingAdjustment > 0) {
-      // Foydalanuvchi to'laganidan ko'p o'tirdi — qo'shimcha qoldiq to'lov.
-      // Hech qanday soxta "paid" belgilanmaydi: PENDING CASH qayd etiladi va
-      // admin kassada qabul qilganda mavjud oqim orqali COMPLETED bo'ladi.
-      extraDue = billingAdjustment;
-      await prisma.payment.create({
-        data: {
-          bookingId: booking.id,
-          userId: booking.userId,
-          amount: extraDue,
-          type: 'REMAINING',
-          method: 'CASH',
-          status: 'PENDING',
-          depositPercent: 0,
-          metadata: { source: 'session_actual_usage', sessionMinutes: billedMinutes },
-        },
-      });
-    } else if (billingAdjustment < 0) {
-      // Kam o'tirdi — qaytariladigan summa bonus ballga (1 ball = 1 so'm).
-      refundPoints = Math.floor(-billingAdjustment);
-      if (refundPoints > 0) {
-        const user = await prisma.user.update({
-          where: { id: booking.userId },
-          data: { loyaltyBalance: { increment: refundPoints } },
-          select: { loyaltyBalance: true },
-        });
-        await prisma.loyaltyTransaction.create({
-          data: {
-            userId: booking.userId,
-            type: 'REFUND',
-            amount: refundPoints,
-            balanceAfter: user.loyaltyBalance,
-            description: `Sessiya qisqaroq bo'lgani uchun ${refundPoints.toLocaleString('ru-RU')} ball qaytarildi (haqiqiy o'yin ${elapsedMinutes} daq.)`,
-            bookingId: booking.id,
-          },
-        });
-      }
-    }
-
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: {
-        status: 'COMPLETED',
-        sessionEndedAt: now,
-        actualDurationMinutes: billedMinutes,
-        actualPrice: actualPrice,
-        billingAdjustment: billingAdjustment,
-      },
-      include: BOOKING_INCLUDE,
-    });
-
-    if (updated.computerId) {
-      await prisma.computer.update({
-        where: { id: updated.computerId },
-        data: { status: 'AVAILABLE' },
-      });
-    }
+    const updated = await prisma.booking.findUnique({ where: { id: booking.id }, include: BOOKING_INCLUDE });
 
     // Sodiqlik dasturi: chegara oshganda shaxsiy promo-kod avtomatik beriladi
     try {
       const { maybeGrantLoyaltyPromo } = await import('../services/loyaltyPromo');
       await maybeGrantLoyaltyPromo(prisma, booking.userId);
-    } catch { /* sodiqlik promo-kod berilmasa sessiya baribir yakunlanadi */ }
+    } catch { /* promo berilmasa sessiya baribir yakunlanadi */ }
 
     io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: 'COMPLETED' });
+    void cacheDel(`avail:${booking.roomId}:*`);
 
     return ok(res, {
       booking: updated,
       session: {
         serverTime: now.toISOString(),
-        elapsedMinutes,
-        billedMinutes,
-        actualPrice,
-        prepaidValue,
-        refundPoints,
-        extraDue,
-        billingAdjustment,
+        alreadyFinalized: result.alreadyFinalized,
+        elapsedMinutes: result.elapsedMinutes,
+        billedHours: result.billedHours,
+        actualPrice: result.actualPrice,
+        prepaidValue: result.prepaidValue,
+        refundPoints: result.refundPoints,
+        extraDue: result.extraDue,
+        billingAdjustment: result.billingAdjustment,
       },
     }, 'Sessiya yakunlandi');
   } catch (err) {
@@ -822,76 +823,150 @@ export const getRoomBookings = async (req: AuthRequest, res: Response, next: Nex
   }
 };
 
-// ============ PATCH /api/admin/bookings/:id/status — ADMIN: tasdiqlash/rad etish ============
-export const updateBookingStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
-  try {
-    const { status } = req.body;
-    const allowedStatuses = ['CONFIRMED', 'CANCELLED', 'COMPLETED', 'ACTIVE', 'PARTIALLY_PAID', 'PAID'];
-    if (!status || !allowedStatuses.includes(status.toUpperCase())) {
-      return badRequest(res, `Status: ${allowedStatuses.join(', ')} bo\'lishi kerak`);
+// ============ ADMIN: bekor qilish (transactional, bir marta) ============
+async function adminCancelBooking(bookingId: string, reason: string, actor: AuthRequest['user']) {
+  return prisma.$transaction(async (tx) => {
+    // Faqat hali yopilmagan bron bekor qilinadi — parallel bekor qilishda
+    // ballar/promo ikki marta qaytarilmaydi.
+    const claimed = await tx.booking.updateMany({
+      where: { id: bookingId, status: { notIn: ['CANCELLED', 'COMPLETED'] } },
+      data: {
+        status: 'CANCELLED',
+        approvalStatus: 'REJECTED',
+        rejectedAt: new Date(),
+        rejectedById: actor?.userId ?? null,
+        rejectionReason: reason,
+      },
+    });
+    if (claimed.count === 0) return false;
+
+    if (bookingId) {
+      await tx.payment.updateMany({
+        where: { bookingId, status: { in: [...PAID_STATUSES] } },
+        data: { status: 'REFUNDED' },
+      });
     }
+    const b = await tx.booking.findUnique({ where: { id: bookingId } });
+    if (b?.computerId) {
+      await tx.computer.updateMany({ where: { id: b.computerId, status: 'OCCUPIED' }, data: { status: 'AVAILABLE' } });
+    }
+    if (b) {
+      await refundPoints(tx, b);
+      if (b.promoCodeId) {
+        await tx.promoRedemption.deleteMany({ where: { bookingId } });
+        await tx.promoCode.update({ where: { id: b.promoCodeId }, data: { usedCount: { decrement: 1 } } });
+      }
+      await tx.notification.create({
+        data: {
+          userId: b.userId,
+          title: 'Bron bekor qilindi',
+          message: `Broningiz bekor qilindi${reason ? `: ${reason}` : ''}. To'langan summa qaytariladi.`,
+          type: 'booking',
+        },
+      });
+    }
+    return true;
+  });
+}
+
+// ============ PATCH /api/bookings/admin/bookings/:id/approval — ADMIN: tasdiqlash ============
+// Bu — YAGONA "yo'l": foydalanuvchi "Boshlash"ni faqat shundan keyin bosadi.
+// Kim, qachon, nima uchun rad etgan — barchasi bazada saqlanadi.
+export const reviewBookingApproval = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const action = String(req.body?.action || '').toLowerCase();
+    if (action !== 'approve' && action !== 'reject') {
+      return badRequest(res, 'action: approve yoki reject bo\'lishi kerak');
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
 
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
-      include: { room: true },
+      include: { room: true, payments: true },
     });
     if (!booking) return notFoundMsg(res, 'Bron topilmadi');
+    if (booking.room.ownerId !== req.user!.userId && req.user!.role !== 'SUPER_ADMIN') {
+      return forbidden(res, 'Faqat o\'z xonangiz bronlarini boshqarasiz');
+    }
+    if (['CANCELLED', 'COMPLETED'].includes(booking.status)) {
+      return badRequest(res, 'Bu bron allaqachon yopilgan', 'BOOKING_CLOSED');
+    }
 
+    if (action === 'approve') {
+      if (!SESSION_STARTABLE.includes(booking.status)) {
+        return badRequest(res, 'Avval to\'lovni tasdiqlang (kassa yoki chek bo\'yicha)', 'BOOKING_NOT_PAID');
+      }
+      const updated = await prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          approvalStatus: 'APPROVED',
+          approvedAt: new Date(),
+          approvedById: req.user!.userId,
+          rejectedAt: null,
+          rejectedById: null,
+          rejectionReason: null,
+        },
+        include: BOOKING_INCLUDE,
+      });
+      await prisma.notification.create({
+        data: {
+          userId: booking.userId,
+          title: 'Broningiz tasdiqlandi',
+          message: `${booking.startTime} dan ${booking.endTime} gacha rejalashtirilgan sessiyangiz tasdiqlandi. Vaqt bo'lganda "Boshlash" tugmasini bosing.`,
+          type: 'booking',
+        },
+      });
+      io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: 'APPROVED' });
+      io.to(`user:${booking.userId}`).emit('booking_approved', { bookingId: booking.id });
+      return ok(res, updated, 'Bron tasdiqlandi — foydalanuvchi vaqtida boshlaydi');
+    }
+
+    if (!reason) return badRequest(res, 'Rad etish sababi majburiy');
+    const done = await adminCancelBooking(booking.id, reason, req.user!);
+    if (!done) return badRequest(res, 'Bron allaqachon yopilgan', 'BOOKING_CLOSED');
+    io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: 'REJECTED' });
+    void cacheDel(`avail:${booking.roomId}:*`);
+    return ok(res, { id: booking.id, approvalStatus: 'REJECTED', status: 'CANCELLED', rejectionReason: reason }, 'Bron rad etildi');
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ============ PATCH /api/bookings/admin/bookings/:id/status — eski endpoint ============
+// Eski UI uchun saqlanadi, lekin endi faqat ikkita xavfsiz o'tishga ruxsat beradi:
+//   CONFIRMED -> tasdiqlash (reviewBookingApproval'ga yo'naltiriladi)
+//   CANCELLED -> bekor qilish
+// ACTIVE/COMPLETED/PAID/PARTIALLY_PAID ga o'tish BLOCKLANADI: bu o'tishlar
+// faqat to'lov tasdiqlanganda yoki sessiya yopilganda (worker) bo'ladi.
+export const updateBookingStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const { status } = req.body;
+    const newStatus = String(status || '').toUpperCase();
+
+    if (newStatus === 'CONFIRMED') {
+      return reviewBookingApproval({ ...req, body: { action: 'approve' } } as AuthRequest, res, next);
+    }
+
+    if (newStatus !== 'CANCELLED') {
+      return badRequest(
+        res,
+        'Bu o\'tish admin panelidan mumkin emas. To\'lovni chek/kassa orqali tasdiqlang, sessiyani esa "Boshlash"/tugash orqali boshqaring.',
+        'INVALID_STATUS_TRANSITION',
+      );
+    }
+
+    const booking = await prisma.booking.findUnique({ where: { id: req.params.id }, include: { room: true } });
+    if (!booking) return notFoundMsg(res, 'Bron topilmadi');
     if (booking.room.ownerId !== req.user!.userId && req.user!.role !== 'SUPER_ADMIN') {
       return forbidden(res, 'Faqat o\'z xonangiz bronlarini boshqarasiz');
     }
 
-    const newStatus = status.toUpperCase();
+    const done = await adminCancelBooking(booking.id, String(req.body?.reason || 'Admin bekor qildi'), req.user!);
+    if (!done) return badRequest(res, 'Bron allaqachon yopilgan', 'BOOKING_CLOSED');
 
-    // Admin to'lov-secured statusga o'tkazganda: kassada qabul qilingan PENDING CASH
-    // to'lovlar ham COMPLETED bo'ladi — pul to'g'ri saqlansin
-    if (['CONFIRMED', 'PARTIALLY_PAID', 'PAID'].includes(newStatus)) {
-      const pendingCash = await prisma.payment.findMany({
-        where: { bookingId: booking.id, status: 'PENDING', method: 'CASH' },
-        select: { id: true },
-      });
-      if (pendingCash.length) {
-        await prisma.payment.updateMany({
-          where: { id: { in: pendingCash.map((p) => p.id) } },
-          data: { status: 'COMPLETED', paidAt: new Date() },
-        });
-      }
-    }
-
-    // Charz bekor qilinsa: kompyuterni bo'shatamiz va to'lovlarni qaytaramiz
-    if (newStatus === 'CANCELLED') {
-      if (booking.computerId) {
-        await prisma.computer.update({
-          where: { id: booking.computerId },
-          data: { status: 'AVAILABLE' },
-        });
-      }
-      await prisma.payment.updateMany({
-        where: { bookingId: booking.id, status: 'COMPLETED' },
-        data: { status: 'REFUNDED' },
-      });
-      // Sarflangan bonus ballar ham qaytariladi
-      await prisma.$transaction(async (tx) => refundPoints(tx, booking));
-      // Promo-kod count'ni qaytarish + redemption qatorini o'chirish
-      if (booking.promoCodeId) {
-        await prisma.promoRedemption.deleteMany({ where: { bookingId: booking.id } });
-        await prisma.promoCode.update({
-          where: { id: booking.promoCodeId },
-          data: { usedCount: { decrement: 1 } },
-        });
-      }
-    }
-
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: { status: newStatus },
-      include: BOOKING_INCLUDE,
-    });
-
-    // Socket — real vaqt
-    io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: newStatus });
-
-    return ok(res, updated, `Bron: ${newStatus}`);
+    io.emit('booking_status_changed', { roomId: booking.roomId, bookingId: booking.id, type: 'CANCELLED' });
+    void cacheDel(`avail:${booking.roomId}:*`);
+    return ok(res, { id: booking.id, status: 'CANCELLED' }, 'Bron bekor qilindi');
   } catch (err) {
     next(err);
   }
@@ -900,13 +975,18 @@ export const updateBookingStatus = async (req: AuthRequest, res: Response, next:
 // ============ GET /api/rooms/:roomId/availability — PUBLIC: bo'sh kompyuterlar vaqti ============
 export const getAvailability = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Muddati o'tgan to'lanmagan bronlarni tozalash (band joylar qaytariladi)
-    await expireUnpaidBeforeRead();
-
+    // PUBLIC endpoint (elon avatar/logo bilan): keshni avval tekshiramiz, DB'ga
+    // umuman murojaat qilmaydi. Tozalash — worker vazifasi.
     const { date } = req.query as { date?: string };
     const refDate = date ? String(date).slice(0, 10) : tashkentTodayISO();
     const availabilityDate = new Date(`${refDate}T00:00:00.000Z`);
     if (isNaN(availabilityDate.getTime())) return badRequest(res, 'Sana noto\'g\'ri');
+
+    const ttl = config.bookings.availabilityCacheTtlSec;
+    if (ttl > 0) {
+      const hit = await cacheGet<any>(`avail:${req.params.roomId}:${refDate}`);
+      if (hit) return ok(res, hit);
+    }
 
     const room = await prisma.computerRoom.findUnique({
       where: { id: req.params.roomId },
@@ -916,50 +996,61 @@ export const getAvailability = async (req: Request, res: Response, next: NextFun
 
     const wh = normalizeWorkingHours(room.workingHours as { open?: string; close?: string } | null);
 
-    // Har bir zona uchun: jami kompyuterlar, band bo'lganlari, bo'shlari va band vaqtlar
-    const zones = [];
-    for (const zone of room.zones) {
-      // Avvalgi kun tungi bronlarini ham hisobga oladi (00:00 bandligi to'g'ri chiqadi)
-      const bookedByComputer = await activeBookingsForDay(prisma, {
-        zoneId: zone.id,
-        computerIds: zone.computers.map((c) => c.id),
-        date: availabilityDate,
-      });
+    // Har bir zona uchun: jami kompyuterlar, band bo'lganlari, bo'shlari va band vaqtlar.
+    // Barcha zona so'rovlari PARALLEL ketadi (ketma-ket emas) — 1000+
+    // foydalanuvchida javob vaqti sezilarli qisqaradi.
+    const zonePayloads = await Promise.all(
+      room.zones.map(async (zone) => {
+        // Avvalgi kun tungi bronlarini ham hisobga oladi (00:00 bandligi to'g'ri chiqadi)
+        const bookedByComputer = await activeBookingsForDay(prisma, {
+          zoneId: zone.id,
+          computerIds: zone.computers.map((c) => c.id),
+          date: availabilityDate,
+        });
 
-      // Har bir kompyuter uchun band vaqtlar (normallashtirilgan)
-      const slotsByComputer = bookedByComputer;
+        // Kunning bo'sh oynalari — kompyuter biror bo'sh oynaga ega bo'lsa tanlanadigan
+        const allComputers = zone.computers.map((c) => {
+          const blocked = bookedByComputer.get(c.id) ?? [];
+          const freeWindows = freeWindowsInDay(blocked, wh.open, wh.close);
+          return {
+            id: c.id,
+            name: c.name,
+            specs: c.specs,
+            status: c.status,
+            canBook: c.status === 'AVAILABLE' && freeWindows.length > 0,
+            bookedSlots: blocked.map((s) => ({ start: minutesToHHMM(s.start), end: minutesToHHMM(s.end) })),
+            freeWindows: freeWindows.map((s) => ({ start: minutesToHHMM(s.start), end: minutesToHHMM(s.end) })),
+          };
+        });
 
-      // Kunning bo'sh oynalari — kompyuter biror bo'sh oynaga ega bo'lsa tanlanadigan
-      const allComputers = zone.computers.map((c) => {
-        const blocked = slotsByComputer.get(c.id) ?? [];
-        const freeWindows = freeWindowsInDay(blocked, wh.open, wh.close);
+        const availableComputers = allComputers.filter((c) => c.canBook);
+
         return {
-          id: c.id,
-          name: c.name,
-          specs: c.specs,
-          status: c.status,
-          canBook: c.status === 'AVAILABLE' && freeWindows.length > 0,
-          bookedSlots: blocked.map((s) => ({ start: minutesToHHMM(s.start), end: minutesToHHMM(s.end) })),
-          freeWindows: freeWindows.map((s) => ({ start: minutesToHHMM(s.start), end: minutesToHHMM(s.end) })),
+          id: zone.id,
+          name: zone.name,
+          type: zone.type,
+          pricePerHour: zone.pricePerHour,
+          // VIP zona: bu bron uchun maksimal davomiylik (daqiqa) — frontend
+          // "1 soat" chegarasini shu yerdan oladi.
+          maxBookingMinutes: zone.type === 'VIP' ? config.vip.maxBookingMinutes : 1440,
+          totalComputers: zone.computers.length,
+          bookedComputers: zone.computers.length - availableComputers.length,
+          availableComputers: availableComputers.length,
+          computers: availableComputers.map((c) => ({ id: c.id, name: c.name, specs: c.specs })),
+          allComputers,
         };
-      });
+      }),
+    );
 
-      const availableComputers = allComputers.filter((c) => c.canBook);
+    const payload = { date: refDate, timezone: 'Asia/Tashkent', zones: zonePayloads };
 
-      zones.push({
-        id: zone.id,
-        name: zone.name,
-        type: zone.type,
-        pricePerHour: zone.pricePerHour,
-        totalComputers: zone.computers.length,
-        bookedComputers: zone.computers.length - availableComputers.length,
-        availableComputers: availableComputers.length,
-        computers: availableComputers.map((c) => ({ id: c.id, name: c.name, specs: c.specs })),
-        allComputers,
-      });
+    // Qisqa muddatli kesh — DB yukini kesadi. Bron yaratilganda/o'zgarganda
+    // `avail:{roomId}:*` darhol o'chiriladi, shuning uchun ma'lumot eskirmaydi.
+    if (ttl > 0) {
+      await cacheSet(`avail:${req.params.roomId}:${refDate}`, payload, ttl);
     }
 
-    return ok(res, { date: refDate, timezone: 'Asia/Tashkent', zones });
+    return ok(res, payload);
   } catch (err) {
     next(err);
   }

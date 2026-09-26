@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, Loader2, LocateFixed, Navigation } from 'lucide-react';
+import { useLocale } from 'next-intl';
+import { getPathname, useRouter } from '@/i18n/navigation';
 import type { Room } from '@/lib/types';
 import { resolveRoomCoords, TASHKENT_CENTER } from '@/lib/constants';
 import { formatPrice } from '@/lib/utils';
@@ -18,7 +20,12 @@ function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: num
   return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
+const escapeHtml = (value: string) =>
+  value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+
 export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: { rooms: Room[]; height?: number; linkBase?: string }) {
+  const locale = useLocale();
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -113,19 +120,20 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
       });
 
       const price = room.zones?.length ? Math.min(...room.zones.map((z) => Number(z.pricePerHour))) : 0;
+      const roomHref = getPathname({ href: linkBase, locale }) + `/${room.id}`;
       const popupHtml = `
         <div style="font-family:Inter,system-ui,sans-serif;min-width:210px;">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
             <span style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#10b981,#f59e0b);color:#000;font-weight:900;font-size:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${i + 1}</span>
-            <div style="font-weight:800;color:#0b3b33;font-size:14px;line-height:1.2;">${room.name}</div>
+            <div style="font-weight:800;color:#0b3b33;font-size:14px;line-height:1.2;">${escapeHtml(room.name)}</div>
           </div>
-          <div style="font-size:12px;color:#555;margin-bottom:4px;">${room.address || ''}</div>
-          ${districtKey && !precise ? `<div style="font-size:11px;color:#92400e;background:#fef3c7;padding:3px 7px;border-radius:6px;margin-bottom:5px;display:inline-block;">Taxminiy joylashuv — ${districtKey} markazi</div>` : ''}
+          <div style="font-size:12px;color:#555;margin-bottom:4px;">${escapeHtml(room.address || '')}</div>
+          ${districtKey && !precise ? `<div style="font-size:11px;color:#92400e;background:#fef3c7;padding:3px 7px;border-radius:6px;margin-bottom:5px;display:inline-block;">Taxminiy joylashuv — ${escapeHtml(districtKey)} markazi</div>` : ''}
           ${!districtKey && !precise ? '<div style="font-size:11px;color:#b91c1c;background:#fee2e2;padding:3px 7px;border-radius:6px;margin-bottom:5px;display:inline-block;">Aniq koordinata kiritilmagan</div>' : ''}
           <div style="font-size:13px;color:#b45309;font-weight:800;margin-bottom:4px;">${formatPrice(price)} so&apos;m/soat dan</div>
           ${dist != null ? `<div style="font-size:12px;color:#0b7285;font-weight:700;margin-bottom:8px;">Sizdan ${dist.toFixed(1)} km${precise ? '' : ' (taxminiy)'}</div>` : ''}
           <div style="display:flex;gap:6px;">
-            <a href="${linkBase}/${room.id}" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#10b981,#0d9668);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(16,185,129,.4);">Batafsil →</a>
+            <a href="${roomHref}" data-room-link="1" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#10b981,#0d9668);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(16,185,129,.4);">Batafsil →</a>
             <a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}" target="_blank" rel="noopener" style="display:inline-flex;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,#6366f1,#4338ca);padding:5px 12px;border-radius:9999px;text-decoration:none;box-shadow:0 4px 10px rgba(99,102,241,.4);">Yo&apos;nalish</a>
           </div>
         </div>`;
@@ -175,7 +183,22 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
     } else {
       map.setView([TASHKENT_CENTER.lat, TASHKENT_CENTER.lng], 12);
     }
-  }, [linkBase]);
+  }, [linkBase, locale]);
+
+  // Popupdagi "Batafsil" havolasi to'liq sahifa reloadisiz navigatsiya qilsin
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!ready || !el) return;
+    const onClick = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement | null)?.closest?.('a[data-room-link]') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      e.preventDefault();
+      const href = anchor.getAttribute('href');
+      if (href) router.push(href);
+    };
+    el.addEventListener('click', onClick);
+    return () => el.removeEventListener('click', onClick);
+  }, [ready, router]);
 
   useEffect(() => {
     applyMarkers(rooms, activeId, myPos);
@@ -252,37 +275,40 @@ export default function RoomsMap({ rooms, height = 440, linkBase = '/rooms' }: {
   return (
     <div className="neo-card rounded-2xl overflow-hidden">
       <div className="relative z-0">
-        <div style={{ height }} ref={containerRef} />
+        <div style={{ height }} ref={containerRef} role="region" aria-label="Xonalar xaritasi" />
         {!ready && (
-          <div className="absolute inset-0 grid place-items-center bg-cyber-900/80">
-            <Loader2 size={22} className="animate-spin text-neon-cyan" />
+          <div className="absolute inset-0 grid place-items-center bg-cyber-900/80" role="status" aria-live="polite">
+            <Loader2 size={22} className="animate-spin text-neon-cyan" aria-hidden="true" />
+            <span className="sr-only">Xarita yuklanmoqda</span>
           </div>
         )}
         {rooms.length > 0 && (
           <button
+            type="button"
             onClick={findNearest}
             disabled={locating}
+            aria-label="Joylashuvimga eng yaqin xonani topish"
             className="absolute bottom-3 right-3 z-[1000] inline-flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl glass border border-neon-cyan/30 text-neon-cyan hover:bg-white/10 transition-colors shadow-lg disabled:opacity-50"
           >
-            {locating ? <Loader2 size={13} className="animate-spin" /> : <LocateFixed size={13} />}
+            {locating ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <LocateFixed size={13} aria-hidden="true" />}
             Eng yaqin
           </button>
         )}
       </div>
-      <div className="px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+      <div className="px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400" role="status" aria-live="polite">
         <span className="flex items-center gap-1.5">
-          <MapPin size={14} className="text-neon-cyan" />
+          <MapPin size={14} className="text-neon-cyan" aria-hidden="true" />
           {rooms.length} ta xona xaritada · marker ustiga bosing — batafsil ma&apos;lumot ko&apos;rinadi
         </span>
         {nearestText && (
           <span className="inline-flex items-center gap-1.5 text-neon-green font-bold">
-            <Navigation size={12} /> {nearestText}
+            <Navigation size={12} aria-hidden="true" /> {nearestText}
           </span>
         )}
-        {locErr && <span className="text-red-400">{locErr}</span>}
+        {locErr && <span role="alert" className="text-red-400">{locErr}</span>}
         {impreciseCount > 0 && (
           <span className="inline-flex items-center gap-1.5 text-amber-300/90">
-            <MapPin size={12} />
+            <MapPin size={12} aria-hidden="true" />
             {impreciseCount} ta xona uchun aniq koordinata kiritilmagan — tuman markazi bo&apos;yicha taxmin qilingan
           </span>
         )}

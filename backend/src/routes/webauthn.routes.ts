@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
 import {
   registerOptions,
   registerVerify,
@@ -11,15 +10,15 @@ import {
   updateRequirePasskey,
 } from '../controllers/webauthn.controller';
 import { authenticate } from '../middlewares/auth';
+import { createRedisRateLimiter } from '../lib/redis';
 
 const router = Router();
 
 // WebAuthn/Passkey endpointlarga ham rate limit — spam/probing oldini olish (max. 15/15min/IP)
-const webauthnLimiter = rateLimit({
+const webauthnLimiter = createRedisRateLimiter({
   windowMs: 15 * 60 * 1000,
   limit: 15,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
+  keyPrefix: 'rl:webauthn',
   message: { success: false, message: "Juda ko'p so'rov. Birozdan so'ng qayta urinib ko'ring." },
 });
 

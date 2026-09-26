@@ -30,7 +30,6 @@ export default function Footer() {
             <ul className="space-y-2 text-sm">
               <li><Link href="/" className="text-gray-400 hover:text-neon-cyan transition-colors">{tn('home')}</Link></li>
               <li><Link href="/rooms" className="text-gray-400 hover:text-neon-cyan transition-colors">{tn('rooms')}</Link></li>
-              <li><Link href="/news" className="text-gray-400 hover:text-neon-cyan transition-colors">{tn('news')}</Link></li>
             </ul>
           </div>
 
@@ -38,7 +37,7 @@ export default function Footer() {
           <div>
             <h4 className="text-sm font-bold text-gray-200 mb-3 uppercase tracking-wider">{t('contact')}</h4>
             <ul className="space-y-2 text-sm text-gray-400">
-              <li className="flex items-center gap-2"><MapPin size={14} className="text-neon-cyan" /> Toshkent, O'zbekiston</li>
+              <li className="flex items-center gap-2"><MapPin size={14} className="text-neon-cyan" /> Toshkent, O&apos;zbekiston</li>
               <li className="flex items-center gap-2"><Phone size={14} className="text-neon-cyan" /> +998 90 000 00 00</li>
               <li className="flex items-center gap-2"><Mail size={14} className="text-neon-cyan" /> info@cyber-zone.uz</li>
             </ul>

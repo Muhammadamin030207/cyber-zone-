@@ -10,6 +10,7 @@ import {
   startBookingSession,
   endBookingSession,
   getSessionInfo,
+  reviewBookingApproval,
 } from '../controllers/booking.controller';
 import { authenticate, authorize } from '../middlewares/auth';
 
@@ -33,5 +34,7 @@ router.post('/:id/session/end', authenticate, endBookingSession);
 // ============ ADMIN ============
 router.get('/admin/bookings', authenticate, authorize('ADMIN', 'SUPER_ADMIN'), getRoomBookings);
 router.patch('/admin/bookings/:id/status', authenticate, authorize('ADMIN', 'SUPER_ADMIN'), updateBookingStatus);
+// To'lov/chek ko'rilgach — bron tasdiqlash yoki rad etish (YAGONA yo'l)
+router.patch('/admin/bookings/:id/approval', authenticate, authorize('ADMIN', 'SUPER_ADMIN'), reviewBookingApproval);
 
 export default router;

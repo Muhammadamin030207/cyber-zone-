@@ -12,6 +12,8 @@ import {
   verifyTotp,
   buildOtpAuthUrl,
   generateBackupCodes,
+  encryptTotpSecret,
+  readTotpSecret,
 } from '../utils/totp';
 import { sendSecurityAlert, clientIp, describeUserAgent, recordSecurityEvent } from '../lib/securityAlerts';
 import { resetData } from '../utils/loginThrottle';
@@ -21,6 +23,31 @@ const ISSUER = 'Cyber-ZONE';
 
 function safeArray(value: unknown): string[] {
   return Array.isArray(value) ? (value as string[]) : [];
+}
+
+/**
+ * DB'dagi TOTP secret'ni ochib tekshiradi (shifrlangan yoki legacy ochiq —
+ * ikkalasi ham qabul qilinadi). Muvaffaqiyatli bo'lsa va qiymat legacy
+ * (ochiq) bo'lsa — uni SHIFRLAB qayta yozadi (migratsiya on-the-fly).
+ * Qayta yozish muvaffaqiyatsiz bo'lsa login/amalni TOXTAMAYDI (foydalanuvchi
+ * allaqachon kodni to'g'ri kiritgan) — faqat logga yoziladi.
+ */
+async function verifyStoredTotp(user: { id: string; twoFactorSecret: string | null }, code: string): Promise<boolean> {
+  const stored = user.twoFactorSecret;
+  if (!stored) return false;
+  const { secret, needsReencrypt } = readTotpSecret(stored);
+  if (!verifyTotp(secret, code)) return false;
+  if (needsReencrypt) {
+    try {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { twoFactorSecret: encryptTotpSecret(secret) },
+      });
+    } catch (err) {
+      console.warn('[2FA] Legacy secretni shifrlab saqlab bo\'lmadi:', (err as Error).message);
+    }
+  }
+  return true;
 }
 
 /** Backup kodni tekshiradi va ishlatilganini ro'yxatdan olib tashlaydi. */
@@ -60,9 +87,16 @@ export const setupTwoFactor = async (req: AuthRequest, res: Response, next: Next
     if (!user) return notFoundMsg(res, 'Foydalanuvchi topilmadi');
     if (user.twoFactorEnabled) return badRequest(res, '2FA allaqachon yoqilgan');
 
-    const secret = user.twoFactorSecret || generateTotpSecret();
-    if (!user.twoFactorSecret) {
-      await prisma.user.update({ where: { id: user.id }, data: { twoFactorSecret: secret } });
+    const stored = user.twoFactorSecret;
+    // DB'da shifrlangan saqlanadi; QR/otpauth uchun foydalanuvchiga ochiq
+    // secret qaytariladi (u o'z authenticator'iga qo'yadi). Mavjud bo'lgan
+    // (shifrlangan yoki legacy ochiq) secret qayta ishlatiladi.
+    const secret = stored ? readTotpSecret(stored).secret : generateTotpSecret();
+    if (!stored) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { twoFactorSecret: encryptTotpSecret(secret) },
+      });
     }
 
     return ok(res, {
@@ -86,7 +120,7 @@ export const enableTwoFactor = async (req: AuthRequest, res: Response, next: Nex
     if (user.twoFactorEnabled) return badRequest(res, '2FA allaqachon yoqilgan');
     if (!user.twoFactorSecret) return badRequest(res, 'Avval 2FA sozlashni boshlang');
 
-    if (!verifyTotp(user.twoFactorSecret, code)) {
+    if (!(await verifyStoredTotp(user, code))) {
       return badRequest(res, "Tasdiqlash kodi noto'g'ri. Vaqtni tekshiring va qayta urinib ko'ring.");
     }
 
@@ -134,7 +168,7 @@ export const disableTwoFactor = async (req: AuthRequest, res: Response, next: Ne
       authorized = await bcrypt.compare(password, user.passwordHash);
     }
     if (!authorized && code && user.twoFactorSecret) {
-      authorized = verifyTotp(user.twoFactorSecret, code);
+      authorized = await verifyStoredTotp(user, code);
     }
     if (!authorized && code) {
       authorized = await consumeBackupCode(user.id, user.twoFactorBackupCodes, code);
@@ -178,7 +212,7 @@ export const regenerateBackupCodes = async (req: AuthRequest, res: Response, nex
     const user = await prisma.user.findUnique({ where: { id: req.user!.userId } });
     if (!user) return notFoundMsg(res, 'Foydalanuvchi topilmadi');
     if (!user.twoFactorEnabled || !user.twoFactorSecret) return badRequest(res, '2FA yoqilmagan');
-    if (!verifyTotp(user.twoFactorSecret, code)) return badRequest(res, "Kod noto'g'ri");
+    if (!(await verifyStoredTotp(user, code))) return badRequest(res, "Kod noto'g'ri");
 
     const backupCodes = generateBackupCodes();
     const hashed = await Promise.all(backupCodes.map((c) => bcrypt.hash(c, 10)));
@@ -215,7 +249,7 @@ export const verifyTwoFactor = async (req: Request, res: Response, next: NextFun
       return badRequest(res, '2FA bu hisobda faol emas');
     }
 
-    let valid = verifyTotp(user.twoFactorSecret, code);
+    let valid = await verifyStoredTotp(user, code);
     if (!valid) {
       valid = await consumeBackupCode(user.id, user.twoFactorBackupCodes, code);
     }
